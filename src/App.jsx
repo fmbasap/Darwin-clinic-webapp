@@ -936,6 +936,17 @@ function PatientApp({ onExit }) {
   const [pushError, setPushError] = useState("");
   const [pushEnabled, setPushEnabled] = useState(false);
 
+  // 예전에 이미 알림 권한을 허용해둔 경우, 버튼 없이도 자동으로 구독을 등록한다.
+  useEffect(() => {
+    if (!profile) return;
+    if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+      subscribeToPush(profile.phone).then(({ error }) => {
+        if (error) setPushError(error);
+        else setPushEnabled(true);
+      });
+    }
+  }, [profile]);
+
   const refreshAll = async () => {
     const [a, m] = await Promise.all([loadAppointments(), loadMessages()]);
     setAllAppointments(a);
