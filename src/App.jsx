@@ -1356,21 +1356,20 @@ function AdminAppointments({ appointments, onStatusChange, onMessage, onRefresh,
                           {a.patientPhone}
                         </div>
                       </div>
-                      <span
-                        onClick={() => a.status === "confirmed" && onStatusChange(a.id, "pending")}
-                        className="text-[11px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1"
-                        style={{ color: STATUS_COLOR[a.status], background: COLORS.paper, cursor: a.status === "confirmed" ? "pointer" : "default" }}
-                        title={a.status === "confirmed" ? "눌러서 대기중으로 되돌리기" : undefined}
-                      >
-                        {a.status === "confirmed" && <RotateCcw size={10} />}
+                      <span className="text-[11px] font-bold px-2 py-0.5 rounded-full" style={{ color: STATUS_COLOR[a.status], background: COLORS.paper }}>
                         {STATUS_LABEL[a.status]}
                       </span>
                     </div>
                     <div className="flex gap-2 mt-2.5">
-                      {a.status === "pending" && (
+                      {a.status === "pending" ? (
                         <button onClick={() => onStatusChange(a.id, "confirmed")} className="flex-1 flex items-center justify-center gap-1 rounded-lg py-1.5 text-xs font-semibold" style={{ background: COLORS.paper, color: COLORS.pine }}>
                           <Check size={13} />
-                          확정하기
+                          예약 확정
+                        </button>
+                      ) : (
+                        <button onClick={() => onStatusChange(a.id, "pending")} className="flex-1 flex items-center justify-center gap-1 rounded-lg py-1.5 text-xs font-semibold" style={{ background: COLORS.paper, color: COLORS.amber }}>
+                          <RotateCcw size={13} />
+                          예약 대기로
                         </button>
                       )}
                       <button onClick={() => onMessage(a.patientPhone, a.patientName)} className="flex-1 flex items-center justify-center gap-1 rounded-lg py-1.5 text-xs font-semibold" style={{ background: COLORS.paper, color: COLORS.slate }}>
