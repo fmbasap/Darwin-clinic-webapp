@@ -44,7 +44,8 @@ const CLINIC = {
 const DOCTOR = { name: "신관호 원장", title: "통증의학과 전문의" };
 const ADMIN_PIN = "2025"; // 데모용 고정 PIN. 실제 운영 시 Supabase Auth 등 진짜 인증으로 교체 필요
 
-const TIMES = ["09:30", "10:00", "10:30", "11:00", "11:30", "14:00", "14:30", "15:00", "15:30", "16:00"];
+const TIMES = ["10:00", "10:30", "11:00", "11:30", "12:00", "14:00", "14:30", "15:00", "15:30", "16:00", "16:30", "17:00", "17:30"];
+const CLOSED_WEEKDAYS = [0, 4]; // 0=일 1=월 2=화 3=수 4=목 5=금 6=토 (일요일·목요일 정기휴무)
 const STATUS_LABEL = { confirmed: "확정", done: "진료완료", cancelled: "취소" };
 const STATUS_COLOR = { confirmed: COLORS.pine, done: COLORS.slate, cancelled: COLORS.danger };
 
@@ -59,6 +60,7 @@ function nextDays(n) {
       key: d.toISOString().slice(0, 10),
       label: `${d.getMonth() + 1}.${d.getDate()}`,
       weekday: weekday[d.getDay()],
+      closed: CLOSED_WEEKDAYS.includes(d.getDay()),
     });
   }
   return days;
@@ -115,7 +117,8 @@ async function insertAppointment(appt) {
       status: "confirmed",
     },
   ]);
-  if (error) console.error(error);
+  if (error && error.code !== "23505") console.error(error);
+  return { error };
 }
 async function updateAppointmentStatus(id, status) {
   const { error } = await supabase.from("appointments").update({ status }).eq("id", id);
@@ -139,6 +142,23 @@ async function insertMessage(msg) {
       body: msg.text,
     },
   ]);
+  if (error) console.error(error);
+}
+async function deleteMessage(id) {
+  const { error } = await supabase.from("messages").delete().eq("id", id);
+  if (error) console.error(error);
+}
+
+async function loadNotice() {
+  const { data, error } = await supabase.from("notice").select("*").eq("id", 1).maybeSingle();
+  if (error) {
+    console.error(error);
+    return "";
+  }
+  return data?.content || "";
+}
+async function saveNotice(content) {
+  const { error } = await supabase.from("notice").upsert({ id: 1, content, updated_at: new Date().toISOString() });
   if (error) console.error(error);
 }
 
@@ -217,6 +237,12 @@ function AppHeader({ title, subtitle }) {
 // ENTRY
 // =========================================================
 function EntryScreen({ onPick }) {
+  const [notice, setNotice] = useState("");
+
+  useEffect(() => {
+    loadNotice().then(setNotice);
+  }, []);
+
   return (
     <div
       className="min-h-screen flex flex-col justify-center px-6"
@@ -233,6 +259,18 @@ function EntryScreen({ onPick }) {
           이용하실 화면을 선택해주세요.
         </p>
       </div>
+
+      {notice.trim() && (
+        <div className="rounded-xl px-4 py-3.5 mb-5" style={{ background: COLORS.white, borderLeft: `3px solid ${COLORS.amber}` }}>
+          <div className="text-[11px] font-bold mb-1" style={{ color: COLORS.amber }}>
+            공지사항
+          </div>
+          <div className="text-sm whitespace-pre-wrap" style={{ color: COLORS.ink }}>
+            {notice}
+          </div>
+        </div>
+      )}
+
       <div className="space-y-3">
         <button onClick={() => onPick("patient")} className="w-full flex items-center gap-3 rounded-xl px-4 py-4" style={{ background: COLORS.white }}>
           <User size={20} color={COLORS.pine} />
@@ -388,19 +426,30 @@ function AppointmentTicket({ appt, onCancel }) {
   );
 }
 
-function BookingFlow({ onCreated, onClose }) {
+function BookingFlow({ allAppointments, onCreated, onClose }) {
   const [step, setStep] = useState(1);
   const [day, setDay] = useState(null);
   const [time, setTime] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  const [conflictMsg, setConflictMsg] = useState("");
 
-  const days = nextDays(10);
+  const days = nextDays(30);
   const back = () => setStep((s) => Math.max(1, s - 1));
+
+  const bookedTimesForDay = day
+    ? new Set(allAppointments.filter((a) => a.dateLabel === day.label && a.status !== "cancelled").map((a) => a.time))
+    : new Set();
 
   const confirm = async () => {
     setSubmitting(true);
-    await onCreated({ dateLabel: day.label, weekday: day.weekday, time });
+    setConflictMsg("");
+    const ok = await onCreated({ dateLabel: day.label, weekday: day.weekday, time });
     setSubmitting(false);
+    if (!ok) {
+      setConflictMsg("죄송해요, 방금 다른 환자가 이 시간을 먼저 예약했어요. 다른 시간을 선택해주세요.");
+      setTime(null);
+      setStep(2);
+    }
   };
 
   const stepLabel = ["날짜", "시간", "확인"][step - 1];
@@ -427,51 +476,84 @@ function BookingFlow({ onCreated, onClose }) {
         <div className="px-5 py-5 overflow-y-auto">
           {step === 1 && (
             <div>
-              <h2 className="text-lg font-bold mb-3" style={{ color: COLORS.ink }}>
+              <h2 className="text-lg font-bold mb-1" style={{ color: COLORS.ink }}>
                 날짜를 선택해주세요
               </h2>
+              <p className="text-xs mb-3" style={{ color: COLORS.slate }}>
+                매주 일요일·목요일은 정기휴무예요.
+              </p>
               <div className="grid grid-cols-4 gap-2">
-                {days.map((d) => (
-                  <button
-                    key={d.key}
-                    onClick={() => {
-                      setDay(d);
-                      setStep(2);
-                    }}
-                    className="rounded-xl py-3 flex flex-col items-center"
-                    style={{ background: COLORS.white }}
-                  >
-                    <span className="text-[10px]" style={{ color: COLORS.inkSoft }}>
-                      {d.weekday}
-                    </span>
-                    <span className="text-sm font-bold mt-0.5" style={{ color: COLORS.ink }}>
-                      {d.label}
-                    </span>
-                  </button>
-                ))}
+                {days.map((d) =>
+                  d.closed ? (
+                    <div
+                      key={d.key}
+                      className="rounded-xl py-3 flex flex-col items-center opacity-50"
+                      style={{ background: COLORS.paperDeep }}
+                    >
+                      <span className="text-[10px]" style={{ color: COLORS.inkSoft }}>
+                        {d.weekday}
+                      </span>
+                      <span className="text-sm font-bold mt-0.5" style={{ color: COLORS.inkSoft }}>
+                        {d.label}
+                      </span>
+                      <span className="text-[9px] font-bold mt-0.5" style={{ color: COLORS.danger }}>
+                        휴무
+                      </span>
+                    </div>
+                  ) : (
+                    <button
+                      key={d.key}
+                      onClick={() => {
+                        setDay(d);
+                        setStep(2);
+                      }}
+                      className="rounded-xl py-3 flex flex-col items-center"
+                      style={{ background: COLORS.white }}
+                    >
+                      <span className="text-[10px]" style={{ color: COLORS.inkSoft }}>
+                        {d.weekday}
+                      </span>
+                      <span className="text-sm font-bold mt-0.5" style={{ color: COLORS.ink }}>
+                        {d.label}
+                      </span>
+                    </button>
+                  )
+                )}
               </div>
             </div>
           )}
 
           {step === 2 && (
             <div>
-              <h2 className="text-lg font-bold mb-3" style={{ color: COLORS.ink }}>
+              <h2 className="text-lg font-bold mb-1" style={{ color: COLORS.ink }}>
                 시간을 선택해주세요
               </h2>
+              {conflictMsg && (
+                <p className="text-xs mb-3 font-medium" style={{ color: COLORS.danger }}>
+                  {conflictMsg}
+                </p>
+              )}
+              {!conflictMsg && <div className="mb-3" />}
               <div className="grid grid-cols-3 gap-2">
-                {TIMES.map((t) => (
-                  <button
-                    key={t}
-                    onClick={() => {
-                      setTime(t);
-                      setStep(3);
-                    }}
-                    className="rounded-xl py-2.5 text-sm font-semibold"
-                    style={{ background: COLORS.white, color: COLORS.ink }}
-                  >
-                    {t}
-                  </button>
-                ))}
+                {TIMES.map((t) =>
+                  bookedTimesForDay.has(t) ? (
+                    <div key={t} className="rounded-xl py-2.5 text-sm font-semibold text-center opacity-50" style={{ background: COLORS.paperDeep, color: COLORS.inkSoft }}>
+                      마감
+                    </div>
+                  ) : (
+                    <button
+                      key={t}
+                      onClick={() => {
+                        setTime(t);
+                        setStep(3);
+                      }}
+                      className="rounded-xl py-2.5 text-sm font-semibold"
+                      style={{ background: COLORS.white, color: COLORS.ink }}
+                    >
+                      {t}
+                    </button>
+                  )
+                )}
               </div>
             </div>
           )}
@@ -612,10 +694,11 @@ function PatientApp({ onExit }) {
   const hasUnreadReply = tab !== "messages" && myMessages.length > 0 && myMessages.at(-1)?.from === "clinic";
 
   const handleCreated = async (draft) => {
-    await insertAppointment({ patientName: profile.name, patientPhone: profile.phone, ...draft });
+    const { error } = await insertAppointment({ patientName: profile.name, patientPhone: profile.phone, ...draft });
     const a = await loadAppointments();
     setAllAppointments(a);
-    setBooking(false);
+    if (!error) setBooking(false);
+    return !error;
   };
 
   const handleCancel = async (id) => {
@@ -694,7 +777,7 @@ function PatientApp({ onExit }) {
         })}
       </div>
 
-      {booking && <BookingFlow onCreated={handleCreated} onClose={() => setBooking(false)} />}
+      {booking && <BookingFlow allAppointments={allAppointments} onCreated={handleCreated} onClose={() => setBooking(false)} />}
     </div>
   );
 }
@@ -916,7 +999,7 @@ function ComposeMessage({ candidates, onStart, onClose }) {
   );
 }
 
-function AdminMessages({ messages, appointments, onReply, onRefresh, refreshing, openTarget, onConsumeOpenTarget }) {
+function AdminMessages({ messages, appointments, onReply, onDelete, onRefresh, refreshing, openTarget, onConsumeOpenTarget }) {
   const [openThread, setOpenThread] = useState(null); // { phone, name } | null
   const [composeOpen, setComposeOpen] = useState(false);
   const [reply, setReply] = useState("");
@@ -979,7 +1062,18 @@ function AdminMessages({ messages, appointments, onReply, onRefresh, refreshing,
             </div>
           )}
           {items.map((m) => (
-            <div key={m.id} className={`flex ${m.from === "clinic" ? "justify-end" : "justify-start"}`}>
+            <div key={m.id} className={`group flex items-center gap-1.5 ${m.from === "clinic" ? "justify-end" : "justify-start"}`}>
+              {m.from === "clinic" && (
+                <button
+                  onClick={() => {
+                    if (window.confirm("이 메시지를 삭제할까요?")) onDelete(m.id);
+                  }}
+                  aria-label="메시지 삭제"
+                  className="opacity-0 group-hover:opacity-100 transition-opacity"
+                >
+                  <X size={14} color={COLORS.slate} />
+                </button>
+              )}
               <div
                 className="max-w-[75%] rounded-2xl px-4 py-2.5 text-sm"
                 style={
@@ -990,6 +1084,17 @@ function AdminMessages({ messages, appointments, onReply, onRefresh, refreshing,
               >
                 {m.text}
               </div>
+              {m.from === "patient" && (
+                <button
+                  onClick={() => {
+                    if (window.confirm("이 메시지를 삭제할까요?")) onDelete(m.id);
+                  }}
+                  aria-label="메시지 삭제"
+                  className="opacity-0 group-hover:opacity-100 transition-opacity"
+                >
+                  <X size={14} color={COLORS.slate} />
+                </button>
+              )}
             </div>
           ))}
           <div ref={bottomRef} />
@@ -1073,6 +1178,47 @@ function AdminMessages({ messages, appointments, onReply, onRefresh, refreshing,
   );
 }
 
+function NoticeEditor({ initialValue, onSave, onClose }) {
+  const [text, setText] = useState(initialValue);
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    setSaving(true);
+    await onSave(text);
+    setSaving(false);
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-30 flex items-end sm:items-center justify-center" style={{ background: "rgba(32,40,31,0.45)" }}>
+      <div className="w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl overflow-hidden flex flex-col" style={{ background: COLORS.paper }}>
+        <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: `1px solid ${COLORS.paperDeep}` }}>
+          <span className="text-sm font-bold" style={{ color: COLORS.ink }}>
+            공지사항 관리
+          </span>
+          <button onClick={onClose} aria-label="닫기">
+            <X size={20} color={COLORS.ink} />
+          </button>
+        </div>
+        <div className="px-5 py-4">
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="환자에게 보여줄 공지사항을 입력하세요. 비워두면 공지사항이 표시되지 않아요."
+            rows={5}
+            className="w-full rounded-xl px-4 py-3 text-sm outline-none resize-none"
+            style={{ background: COLORS.white, color: COLORS.ink }}
+          />
+          <button onClick={save} disabled={saving} className="w-full mt-3 rounded-xl py-3 font-bold text-sm flex items-center justify-center gap-2" style={{ background: COLORS.pineDeep, color: COLORS.white }}>
+            {saving && <Loader2 size={16} className="animate-spin" />}
+            저장하기
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AdminApp({ onExit }) {
   const [authed, setAuthed] = useState(false);
   const [tab, setTab] = useState("appointments");
@@ -1085,6 +1231,8 @@ function AdminApp({ onExit }) {
   const [newApptCount, setNewApptCount] = useState(0);
   const [newMsgCount, setNewMsgCount] = useState(0);
   const [messageTarget, setMessageTarget] = useState(null); // { phone, name } | null
+  const [notice, setNotice] = useState("");
+  const [noticeEditorOpen, setNoticeEditorOpen] = useState(false);
 
   const seenApptIds = useRef(null);
   const seenMsgIds = useRef(null);
@@ -1163,11 +1311,17 @@ function AdminApp({ onExit }) {
     (async () => {
       setLoading(true);
       await refresh(false);
+      setNotice(await loadNotice());
       setLoading(false);
     })();
     pollRef.current = setInterval(() => refresh(true), 15000);
     return () => clearInterval(pollRef.current);
   }, [authed]);
+
+  const handleSaveNotice = async (text) => {
+    await saveNotice(text);
+    setNotice(text);
+  };
 
   const handleStatusChange = async (id, status) => {
     await updateAppointmentStatus(id, status);
@@ -1178,6 +1332,11 @@ function AdminApp({ onExit }) {
     await insertMessage({ patientName, patientPhone, from: "clinic", text });
     const m = await loadMessages();
     setMessages(m);
+  };
+
+  const handleDeleteMessage = async (id) => {
+    await deleteMessage(id);
+    setMessages((prev) => prev.filter((m) => m.id !== id));
   };
 
   if (!authed) {
@@ -1203,10 +1362,15 @@ function AdminApp({ onExit }) {
 
       <div className="px-5 pt-6 pb-4 flex items-start justify-between">
         <AppHeader title="STAFF DASHBOARD" subtitle={DOCTOR.name} />
-        <button onClick={() => setAuthed(false)} className="flex items-center gap-1 text-xs font-medium mt-1" style={{ color: COLORS.slate }}>
-          <LogOut size={14} />
-          로그아웃
-        </button>
+        <div className="flex flex-col items-end gap-2 mt-1">
+          <button onClick={() => setAuthed(false)} className="flex items-center gap-1 text-xs font-medium" style={{ color: COLORS.slate }}>
+            <LogOut size={14} />
+            로그아웃
+          </button>
+          <button onClick={() => setNoticeEditorOpen(true)} className="text-xs font-medium" style={{ color: COLORS.pine }}>
+            공지사항 관리
+          </button>
+        </div>
       </div>
 
       {notifPermission !== "granted" && notifPermission !== "unsupported" && (
@@ -1238,6 +1402,7 @@ function AdminApp({ onExit }) {
             messages={messages}
             appointments={appointments}
             onReply={handleReply}
+            onDelete={handleDeleteMessage}
             onRefresh={() => refresh(false)}
             refreshing={refreshing}
             openTarget={messageTarget}
@@ -1278,13 +1443,11 @@ function AdminApp({ onExit }) {
           );
         })}
       </div>
+
+      {noticeEditorOpen && <NoticeEditor initialValue={notice} onSave={handleSaveNotice} onClose={() => setNoticeEditorOpen(false)} />}
     </div>
   );
 }
-
-// =========================================================
-// ROOT
-// =========================================================
 export default function App() {
   const [mode, setMode] = useState(null);
 
