@@ -48,7 +48,7 @@ const DOCTOR = { name: "신관호 원장", title: "통증의학과 전문의" };
 const ADMIN_PIN = "2025"; // 데모용 고정 PIN. 실제 운영 시 Supabase Auth 등 진짜 인증으로 교체 필요
 
 const TIMES = ["10:00", "10:30", "11:00", "11:30", "12:00", "14:00", "14:30", "15:00", "15:30", "16:00", "16:30", "17:00", "17:30"];
-const CLOSED_WEEKDAYS = [0, 4]; // 0=일 1=월 2=화 3=수 4=목 5=금 6=토 (일요일·목요일 정기휴무)
+const CLOSED_WEEKDAYS = [4, 0]; // 0=일 1=월 2=화 3=수 4=목 5=금 6=토 (목요일·일요일 정기휴무)
 const WEEKDAY_NAMES = ["일", "월", "화", "수", "목", "금", "토"];
 const CLOSED_DAYS_LABEL = CLOSED_WEEKDAYS.map((i) => WEEKDAY_NAMES[i]).join("·");
 const CLINIC_HOURS_LABEL = "10:00~18:00 (점심 12:30~14:00)";
@@ -92,6 +92,24 @@ async function subscribeToPush(patientPhone) {
     return { error: null };
   } catch (e) {
     return { error: e.message || "알림 등록에 실패했어요." };
+  }
+}
+
+async function unsubscribeFromPush() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    return { error: null };
+  }
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    if (subscription) {
+      const endpoint = subscription.endpoint;
+      await supabase.from("push_subscriptions").delete().eq("endpoint", endpoint);
+      await subscription.unsubscribe();
+    }
+    return { error: null };
+  } catch (e) {
+    return { error: e.message || "알림 끄기에 실패했어요." };
   }
 }
 const STATUS_LABEL = { confirmed: "확정", done: "진료완료", cancelled: "취소" };
@@ -595,7 +613,7 @@ function BookingFlow({ allAppointments, myAppointments, onCreated, onClose }) {
                 날짜를 선택해주세요
               </h2>
               <p className="text-xs mb-3" style={{ color: COLORS.slate }}>
-                매주 일요일·목요일은 정기휴무예요. 하루에 한 건만 예약 가능해요.
+                매주 목요일·일요일은 정기휴무예요. 하루에 한 건만 예약 가능해요.
               </p>
               {conflictMsg && (
                 <p className="text-xs mb-3 font-medium" style={{ color: COLORS.danger }}>
@@ -924,6 +942,7 @@ function PatientApp({ onExit }) {
       const perm = await Notification.requestPermission();
       setNotifPermission(perm);
       if (perm === "granted" && profileRef.current) {
+        localStorage.removeItem(`push-disabled:${profileRef.current.phone}`);
         const { error } = await subscribeToPush(profileRef.current.phone);
         if (error) setPushError(error);
         else setPushEnabled(true);
@@ -933,12 +952,20 @@ function PatientApp({ onExit }) {
     }
   };
 
+  const handleDisablePush = async () => {
+    if (profile) localStorage.setItem(`push-disabled:${profile.phone}`, "1");
+    await unsubscribeFromPush();
+    setPushEnabled(false);
+  };
+
   const [pushError, setPushError] = useState("");
   const [pushEnabled, setPushEnabled] = useState(false);
 
   // 예전에 이미 알림 권한을 허용해둔 경우, 버튼 없이도 자동으로 구독을 등록한다.
+  // 단, 환자가 직접 "끄기"를 눌렀던 경우에는 다시 자동으로 켜지지 않는다.
   useEffect(() => {
     if (!profile) return;
+    if (localStorage.getItem(`push-disabled:${profile.phone}`) === "1") return;
     if (typeof Notification !== "undefined" && Notification.permission === "granted") {
       subscribeToPush(profile.phone).then(({ error }) => {
         if (error) setPushError(error);
@@ -1066,7 +1093,7 @@ function PatientApp({ onExit }) {
         </button>
       </div>
 
-      {notifPermission !== "granted" && notifPermission !== "unsupported" && (
+      {!pushEnabled && notifPermission !== "unsupported" && (
         <div className="mx-5 mb-3 rounded-xl px-4 py-3 flex items-center justify-between" style={{ background: COLORS.white }}>
           <span className="text-xs" style={{ color: COLORS.inkSoft }}>
             앱을 꺼두어도 병원 답장을 알림으로 받아보시겠어요?
@@ -1077,10 +1104,13 @@ function PatientApp({ onExit }) {
         </div>
       )}
       {pushEnabled && (
-        <div className="mx-5 mb-3 rounded-xl px-4 py-2.5" style={{ background: COLORS.white }}>
+        <div className="mx-5 mb-3 rounded-xl px-4 py-2.5 flex items-center justify-between" style={{ background: COLORS.white }}>
           <span className="text-xs font-semibold" style={{ color: COLORS.pine }}>
             ✓ 알림이 켜졌어요
           </span>
+          <button onClick={handleDisablePush} className="text-xs font-medium" style={{ color: COLORS.slate }}>
+            끄기
+          </button>
         </div>
       )}
       {pushError && (
