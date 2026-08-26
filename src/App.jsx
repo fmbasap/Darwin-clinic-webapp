@@ -1804,6 +1804,92 @@ function AdminCommunity({ posts, onDelete, onRefresh, refreshing }) {
   );
 }
 
+function AdminCustomers({ appointments, messages, onMessage, onRefresh, refreshing }) {
+  const [query, setQuery] = useState("");
+
+  const customers = {};
+  appointments.forEach((a) => {
+    const c = customers[a.patientPhone] || { phone: a.patientPhone, name: a.patientName, apptCount: 0, lastVisit: null, lastVisitAt: 0 };
+    c.name = a.patientName;
+    if (a.status !== "cancelled") c.apptCount += 1;
+    const t = new Date(a.createdAt).getTime();
+    if (t > c.lastVisitAt) {
+      c.lastVisitAt = t;
+      c.lastVisit = `${a.dateLabel} ${a.time}`;
+    }
+    customers[a.patientPhone] = c;
+  });
+  messages.forEach((m) => {
+    const c = customers[m.patientPhone] || { phone: m.patientPhone, name: m.patientName, apptCount: 0, lastVisit: null, lastVisitAt: 0 };
+    c.name = c.name || m.patientName;
+    customers[m.patientPhone] = c;
+  });
+
+  const list = Object.values(customers)
+    .filter((c) => !query.trim() || c.name.includes(query.trim()) || c.phone.includes(query.trim()))
+    .sort((a, b) => b.lastVisitAt - a.lastVisitAt);
+
+  return (
+    <div className="h-full overflow-y-auto px-5 pb-24">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-xs font-semibold" style={{ color: COLORS.inkSoft }}>
+          고객 {Object.keys(customers).length}명
+        </span>
+        <button onClick={onRefresh} className="flex items-center gap-1 text-xs font-medium" style={{ color: COLORS.pine }}>
+          <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} />
+          새로고침
+        </button>
+      </div>
+
+      <div className="rounded-xl flex items-center gap-2 px-4 py-3 mb-4" style={{ background: COLORS.white }}>
+        <User size={16} color={COLORS.slate} />
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="이름 또는 전화번호로 검색"
+          className="flex-1 outline-none text-sm bg-transparent"
+          style={{ color: COLORS.ink }}
+        />
+      </div>
+
+      {list.length === 0 ? (
+        <div className="text-center text-sm mt-10" style={{ color: COLORS.inkSoft }}>
+          {query.trim() ? "검색 결과가 없어요." : "아직 등록된 고객이 없어요."}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {list.map((c) => (
+            <div key={c.phone} className="rounded-xl px-4 py-3.5" style={{ background: COLORS.white }}>
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="font-bold text-sm" style={{ color: COLORS.ink }}>
+                    {c.name}
+                  </div>
+                  <div className="text-xs mt-0.5" style={{ color: COLORS.inkSoft }}>
+                    {c.phone}
+                  </div>
+                </div>
+                <button
+                  onClick={() => onMessage(c.phone, c.name)}
+                  className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold"
+                  style={{ background: COLORS.paper, color: COLORS.pine }}
+                >
+                  <MessageCircle size={13} />
+                  메시지
+                </button>
+              </div>
+              <div className="flex items-center gap-3 mt-2 text-[11px]" style={{ color: COLORS.slate }}>
+                <span>예약 {c.apptCount}건</span>
+                {c.lastVisit && <span>최근 예약 {c.lastVisit}</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AdminApp({ onExit }) {
   const [authed, setAuthed] = useState(false);
   const [tab, setTab] = useState("appointments");
@@ -2032,8 +2118,20 @@ function AdminApp({ onExit }) {
             openTarget={messageTarget}
             onConsumeOpenTarget={() => setMessageTarget(null)}
           />
-        ) : (
+        ) : tab === "community" ? (
           <AdminCommunity posts={posts} onDelete={handleDeletePost} onRefresh={refreshPosts} refreshing={postsRefreshing} />
+        ) : (
+          <AdminCustomers
+            appointments={appointments}
+            messages={messages}
+            onMessage={(phone, name) => {
+              setMessageTarget({ phone, name });
+              setTab("messages");
+              setNewMsgCount(0);
+            }}
+            onRefresh={() => refresh(false)}
+            refreshing={refreshing}
+          />
         )}
       </div>
 
@@ -2042,6 +2140,7 @@ function AdminApp({ onExit }) {
           { id: "appointments", label: "예약 관리", icon: Calendar, badge: newApptCount },
           { id: "messages", label: "메시지 관리", icon: Users, badge: newMsgCount },
           { id: "community", label: "커뮤니티 관리", icon: Users2, badge: 0 },
+          { id: "customers", label: "고객 목록", icon: User, badge: 0 },
         ].map((t) => {
           const Icon = t.icon;
           const active = tab === t.id;
