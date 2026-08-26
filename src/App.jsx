@@ -46,6 +46,9 @@ const ADMIN_PIN = "2025"; // 데모용 고정 PIN. 실제 운영 시 Supabase Au
 
 const TIMES = ["10:00", "10:30", "11:00", "11:30", "12:00", "14:00", "14:30", "15:00", "15:30", "16:00", "16:30", "17:00", "17:30"];
 const CLOSED_WEEKDAYS = [0, 4]; // 0=일 1=월 2=화 3=수 4=목 5=금 6=토 (일요일·목요일 정기휴무)
+const WEEKDAY_NAMES = ["일", "월", "화", "수", "목", "금", "토"];
+const CLOSED_DAYS_LABEL = CLOSED_WEEKDAYS.map((i) => WEEKDAY_NAMES[i]).join("·");
+const CLINIC_HOURS_LABEL = "10:00~18:00 (점심 12:30~14:00)";
 const STATUS_LABEL = { confirmed: "확정", done: "진료완료", cancelled: "취소" };
 const STATUS_COLOR = { confirmed: COLORS.pine, done: COLORS.slate, cancelled: COLORS.danger };
 
@@ -258,6 +261,15 @@ function EntryScreen({ onPick }) {
         <p className="text-sm mt-2" style={{ color: COLORS.inkSoft }}>
           이용하실 화면을 선택해주세요.
         </p>
+      </div>
+
+      <div className="rounded-xl px-4 py-3 mb-4 flex items-center justify-between" style={{ background: COLORS.white }}>
+        <div className="text-xs" style={{ color: COLORS.inkSoft }}>
+          진료시간 {CLINIC_HOURS_LABEL}
+        </div>
+        <div className="text-xs font-bold" style={{ color: COLORS.danger }}>
+          정기휴무 {CLOSED_DAYS_LABEL}
+        </div>
       </div>
 
       {notice.trim() && (
