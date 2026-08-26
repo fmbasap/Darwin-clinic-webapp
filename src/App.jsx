@@ -757,7 +757,7 @@ function MessagesView({ messages, onSend }) {
           </div>
         )}
         {messages.map((m) => (
-          <div key={m.id} className={`flex ${m.from === "patient" ? "justify-end" : "justify-start"}`}>
+          <div key={m.id} className={`flex flex-col ${m.from === "patient" ? "items-end" : "items-start"}`}>
             <div
               className="max-w-[75%] rounded-2xl px-4 py-2.5 text-sm"
               style={
@@ -768,6 +768,9 @@ function MessagesView({ messages, onSend }) {
             >
               {m.text}
             </div>
+            <span className="text-[10px] mt-1 px-1" style={{ color: COLORS.slate }}>
+              {formatMsgTime(m.at)}
+            </span>
           </div>
         ))}
         <div ref={bottomRef} />
@@ -798,6 +801,16 @@ function timeAgo(iso) {
   if (hours < 24) return `${hours}시간 전`;
   const days = Math.floor(hours / 24);
   return `${days}일 전`;
+}
+
+function formatMsgTime(iso) {
+  const d = new Date(iso);
+  const today = new Date();
+  const isToday = d.toDateString() === today.toDateString();
+  const time = d.toLocaleTimeString("ko-KR", { hour: "numeric", minute: "2-digit" });
+  if (isToday) return time;
+  const dateLabel = `${d.getMonth() + 1}.${d.getDate()}`;
+  return `${dateLabel} ${time}`;
 }
 
 function CommunityBoard({ posts, myPhone, onPost, onDelete, onRefresh, refreshing }) {
@@ -1483,39 +1496,44 @@ function AdminMessages({ messages, appointments, onReply, onDelete, onRefresh, r
             </div>
           )}
           {items.map((m) => (
-            <div key={m.id} className={`group flex items-center gap-1.5 ${m.from === "clinic" ? "justify-end" : "justify-start"}`}>
-              {m.from === "clinic" && (
-                <button
-                  onClick={() => {
-                    if (window.confirm("이 메시지를 삭제할까요?")) onDelete(m.id);
-                  }}
-                  aria-label="메시지 삭제"
-                  className="opacity-0 group-hover:opacity-100 transition-opacity"
+            <div key={m.id} className={`group flex flex-col ${m.from === "clinic" ? "items-end" : "items-start"}`}>
+              <div className="flex items-center gap-1.5">
+                {m.from === "clinic" && (
+                  <button
+                    onClick={() => {
+                      if (window.confirm("이 메시지를 삭제할까요?")) onDelete(m.id);
+                    }}
+                    aria-label="메시지 삭제"
+                    className="opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
+                    <X size={14} color={COLORS.slate} />
+                  </button>
+                )}
+                <div
+                  className="max-w-[75%] rounded-2xl px-4 py-2.5 text-sm"
+                  style={
+                    m.from === "clinic"
+                      ? { background: COLORS.pine, color: COLORS.white, borderBottomRightRadius: 4 }
+                      : { background: COLORS.white, color: COLORS.ink, borderBottomLeftRadius: 4 }
+                  }
                 >
-                  <X size={14} color={COLORS.slate} />
-                </button>
-              )}
-              <div
-                className="max-w-[75%] rounded-2xl px-4 py-2.5 text-sm"
-                style={
-                  m.from === "clinic"
-                    ? { background: COLORS.pine, color: COLORS.white, borderBottomRightRadius: 4 }
-                    : { background: COLORS.white, color: COLORS.ink, borderBottomLeftRadius: 4 }
-                }
-              >
-                {m.text}
+                  {m.text}
+                </div>
+                {m.from === "patient" && (
+                  <button
+                    onClick={() => {
+                      if (window.confirm("이 메시지를 삭제할까요?")) onDelete(m.id);
+                    }}
+                    aria-label="메시지 삭제"
+                    className="opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
+                    <X size={14} color={COLORS.slate} />
+                  </button>
+                )}
               </div>
-              {m.from === "patient" && (
-                <button
-                  onClick={() => {
-                    if (window.confirm("이 메시지를 삭제할까요?")) onDelete(m.id);
-                  }}
-                  aria-label="메시지 삭제"
-                  className="opacity-0 group-hover:opacity-100 transition-opacity"
-                >
-                  <X size={14} color={COLORS.slate} />
-                </button>
-              )}
+              <span className="text-[10px] mt-1 px-1" style={{ color: COLORS.slate }}>
+                {formatMsgTime(m.at)}
+              </span>
             </div>
           ))}
           <div ref={bottomRef} />
