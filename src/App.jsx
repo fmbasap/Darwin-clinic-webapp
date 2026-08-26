@@ -18,6 +18,8 @@ import {
   XCircle,
   ArrowLeft,
   RotateCcw,
+  Users2,
+  Trash2,
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
@@ -50,6 +52,48 @@ const CLOSED_WEEKDAYS = [0, 4]; // 0=일 1=월 2=화 3=수 4=목 5=금 6=토 (�
 const WEEKDAY_NAMES = ["일", "월", "화", "수", "목", "금", "토"];
 const CLOSED_DAYS_LABEL = CLOSED_WEEKDAYS.map((i) => WEEKDAY_NAMES[i]).join("·");
 const CLINIC_HOURS_LABEL = "10:00~18:00 (점심 12:30~14:00)";
+
+// 서버(Edge Function)에서 발급한 VAPID 공개키와 반드시 짝이 맞아야 함
+const VAPID_PUBLIC_KEY = "BOWhM_xADN6MuPRxAIjRVn8KWta-2TqDXhLMFIja0eCf4vFPuTO9E0RYjH68_cTatzlek8k3hg6Z0jvD00_a6Mw";
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; i++) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}
+
+async function subscribeToPush(patientPhone) {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    return { error: "이 브라우저는 푸시 알림을 지원하지 않아요." };
+  }
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    let subscription = await registration.pushManager.getSubscription();
+    if (!subscription) {
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+      });
+    }
+    const json = subscription.toJSON();
+    const { error } = await supabase.from("push_subscriptions").upsert(
+      {
+        patient_phone: patientPhone,
+        endpoint: json.endpoint,
+        p256dh: json.keys.p256dh,
+        auth: json.keys.auth,
+      },
+      { onConflict: "endpoint" }
+    );
+    if (error) return { error: error.message };
+    return { error: null };
+  } catch (e) {
+    return { error: e.message || "알림 등록에 실패했어요." };
+  }
+}
 const STATUS_LABEL = { confirmed: "확정", done: "진료완료", cancelled: "취소" };
 const STATUS_COLOR = { confirmed: COLORS.pine, done: COLORS.slate, cancelled: COLORS.danger };
 
@@ -164,6 +208,44 @@ async function loadNotice() {
 }
 async function saveNotice(content) {
   const { error } = await supabase.from("notice").upsert({ id: 1, content, updated_at: new Date().toISOString() });
+  if (error) console.error(error);
+}
+
+// ---- 커뮤니티 게시판 ----
+function maskName(name) {
+  const trimmed = (name || "").trim();
+  if (trimmed.length <= 1) return trimmed + "님";
+  if (trimmed.length === 2) return trimmed[0] + "O";
+  return trimmed[0] + "O".repeat(trimmed.length - 2) + trimmed[trimmed.length - 1];
+}
+
+async function loadPosts() {
+  const { data, error } = await supabase.from("community_posts").select("*").order("created_at", { ascending: false });
+  if (error) {
+    console.error(error);
+    return [];
+  }
+  return data.map((r) => ({
+    id: r.id,
+    patientPhone: r.patient_phone,
+    displayName: r.display_name,
+    content: r.content,
+    createdAt: r.created_at,
+  }));
+}
+async function insertPost({ patientPhone, patientName, content }) {
+  const { error } = await supabase.from("community_posts").insert([
+    {
+      patient_phone: patientPhone,
+      display_name: maskName(patientName),
+      content,
+    },
+  ]);
+  if (error) console.error(error);
+  return { error };
+}
+async function deletePost(id) {
+  const { error } = await supabase.from("community_posts").delete().eq("id", id);
   if (error) console.error(error);
 }
 
@@ -440,7 +522,7 @@ function AppointmentTicket({ appt, onCancel }) {
   );
 }
 
-function BookingFlow({ allAppointments, onCreated, onClose }) {
+function BookingFlow({ allAppointments, myAppointments, onCreated, onClose }) {
   const [step, setStep] = useState(1);
   const [day, setDay] = useState(null);
   const [time, setTime] = useState(null);
@@ -450,19 +532,38 @@ function BookingFlow({ allAppointments, onCreated, onClose }) {
   const days = nextDays(30);
   const back = () => setStep((s) => Math.max(1, s - 1));
 
+  const myActiveDates = new Set(myAppointments.filter((a) => a.status !== "cancelled").map((a) => a.dateLabel));
+
   const bookedTimesForDay = day
     ? new Set(allAppointments.filter((a) => a.dateLabel === day.label && a.status !== "cancelled").map((a) => a.time))
     : new Set();
 
+  const pickDay = (d) => {
+    if (myActiveDates.has(d.label)) {
+      setConflictMsg("이미 이 날짜에 예약이 있어요. 하루에 한 건만 예약 가능해요.");
+      return;
+    }
+    setConflictMsg("");
+    setDay(d);
+    setStep(2);
+  };
+
   const confirm = async () => {
     setSubmitting(true);
     setConflictMsg("");
-    const ok = await onCreated({ dateLabel: day.label, weekday: day.weekday, time });
+    const result = await onCreated({ dateLabel: day.label, weekday: day.weekday, time });
     setSubmitting(false);
-    if (!ok) {
-      setConflictMsg("죄송해요, 방금 다른 환자가 이 시간을 먼저 예약했어요. 다른 시간을 선택해주세요.");
-      setTime(null);
-      setStep(2);
+    if (!result.ok) {
+      if (result.reason === "already_booked_today") {
+        setConflictMsg("이미 이 날짜에 예약이 있어요. 하루에 한 건만 예약 가능해요.");
+        setDay(null);
+        setTime(null);
+        setStep(1);
+      } else {
+        setConflictMsg("죄송해요, 방금 다른 환자가 이 시간을 먼저 예약했어요. 다른 시간을 선택해주세요.");
+        setTime(null);
+        setStep(2);
+      }
     }
   };
 
@@ -494,8 +595,13 @@ function BookingFlow({ allAppointments, onCreated, onClose }) {
                 날짜를 선택해주세요
               </h2>
               <p className="text-xs mb-3" style={{ color: COLORS.slate }}>
-                매주 일요일·목요일은 정기휴무예요.
+                매주 일요일·목요일은 정기휴무예요. 하루에 한 건만 예약 가능해요.
               </p>
+              {conflictMsg && (
+                <p className="text-xs mb-3 font-medium" style={{ color: COLORS.danger }}>
+                  {conflictMsg}
+                </p>
+              )}
               <div className="grid grid-cols-4 gap-2">
                 {days.map((d) =>
                   d.closed ? (
@@ -514,16 +620,24 @@ function BookingFlow({ allAppointments, onCreated, onClose }) {
                         휴무
                       </span>
                     </div>
-                  ) : (
-                    <button
+                  ) : myActiveDates.has(d.label) ? (
+                    <div
                       key={d.key}
-                      onClick={() => {
-                        setDay(d);
-                        setStep(2);
-                      }}
-                      className="rounded-xl py-3 flex flex-col items-center"
-                      style={{ background: COLORS.white }}
+                      className="rounded-xl py-3 flex flex-col items-center opacity-50"
+                      style={{ background: COLORS.paperDeep }}
                     >
+                      <span className="text-[10px]" style={{ color: COLORS.inkSoft }}>
+                        {d.weekday}
+                      </span>
+                      <span className="text-sm font-bold mt-0.5" style={{ color: COLORS.inkSoft }}>
+                        {d.label}
+                      </span>
+                      <span className="text-[9px] font-bold mt-0.5" style={{ color: COLORS.pine }}>
+                        예약됨
+                      </span>
+                    </div>
+                  ) : (
+                    <button key={d.key} onClick={() => pickDay(d)} className="rounded-xl py-3 flex flex-col items-center" style={{ background: COLORS.white }}>
                       <span className="text-[10px]" style={{ color: COLORS.inkSoft }}>
                         {d.weekday}
                       </span>
@@ -657,18 +771,186 @@ function MessagesView({ messages, onSend }) {
   );
 }
 
+function timeAgo(iso) {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "방금 전";
+  if (mins < 60) return `${mins}분 전`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}시간 전`;
+  const days = Math.floor(hours / 24);
+  return `${days}일 전`;
+}
+
+function CommunityBoard({ posts, myPhone, onPost, onDelete, onRefresh, refreshing }) {
+  const [composing, setComposing] = useState(false);
+  const [text, setText] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async () => {
+    if (!text.trim()) return;
+    setSubmitting(true);
+    await onPost(text.trim());
+    setSubmitting(false);
+    setText("");
+    setComposing(false);
+  };
+
+  return (
+    <div className="h-full overflow-y-auto px-5 pb-24">
+      <div className="flex items-center justify-between mb-4">
+        <span className="text-xs font-semibold" style={{ color: COLORS.inkSoft }}>
+          환자들과 경험을 나눠보세요
+        </span>
+        <button onClick={onRefresh} className="flex items-center gap-1 text-xs font-medium" style={{ color: COLORS.pine }}>
+          <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} />
+          새로고침
+        </button>
+      </div>
+
+      <button onClick={() => setComposing(true)} className="w-full rounded-2xl py-3.5 font-bold text-sm mb-4" style={{ background: COLORS.pineDeep, color: COLORS.white }}>
+        글쓰기
+      </button>
+
+      {posts.length === 0 ? (
+        <div className="text-center text-sm mt-10" style={{ color: COLORS.inkSoft }}>
+          아직 게시글이 없어요. 첫 글을 남겨보세요.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {posts.map((p) => (
+            <div key={p.id} className="rounded-xl px-4 py-3.5" style={{ background: COLORS.white }}>
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-sm font-bold" style={{ color: COLORS.ink }}>
+                  {p.displayName}
+                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px]" style={{ color: COLORS.slate }}>
+                    {timeAgo(p.createdAt)}
+                  </span>
+                  {p.patientPhone === myPhone && (
+                    <button onClick={() => onDelete(p.id)} aria-label="삭제">
+                      <X size={13} color={COLORS.slate} />
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="text-sm whitespace-pre-wrap" style={{ color: COLORS.ink }}>
+                {p.content}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {composing && (
+        <div className="fixed inset-0 z-20 flex items-end sm:items-center justify-center" style={{ background: "rgba(32,40,31,0.45)" }}>
+          <div className="w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl overflow-hidden" style={{ background: COLORS.paper }}>
+            <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: `1px solid ${COLORS.paperDeep}` }}>
+              <span className="text-sm font-bold" style={{ color: COLORS.ink }}>
+                글쓰기
+              </span>
+              <button onClick={() => setComposing(false)} aria-label="닫기">
+                <X size={20} color={COLORS.ink} />
+              </button>
+            </div>
+            <div className="px-5 py-4">
+              <textarea
+                value={text}
+                onChange={(e) => setText(e.target.value.slice(0, 500))}
+                placeholder="경험이나 궁금한 점을 나눠보세요. (최대 500자)"
+                rows={5}
+                className="w-full rounded-xl px-4 py-3 text-sm outline-none resize-none"
+                style={{ background: COLORS.white, color: COLORS.ink }}
+              />
+              <div className="text-right text-[11px] mt-1" style={{ color: COLORS.slate }}>
+                {text.length}/500
+              </div>
+              <button
+                onClick={submit}
+                disabled={submitting || !text.trim()}
+                className="w-full mt-2 rounded-xl py-3 font-bold text-sm flex items-center justify-center gap-2"
+                style={{ background: COLORS.pineDeep, color: COLORS.white }}
+              >
+                {submitting && <Loader2 size={16} className="animate-spin" />}
+                게시하기
+              </button>
+              <p className="text-[11px] text-center mt-2" style={{ color: COLORS.slate }}>
+                작성자 실명·연락처는 다른 환자에게 보이지 않아요. 부적절한 글은 병원이 삭제할 수 있어요.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PatientApp({ onExit }) {
   const [tab, setTab] = useState("book");
   const [allAppointments, setAllAppointments] = useState([]);
   const [allMessages, setAllMessages] = useState([]);
+  const [posts, setPosts] = useState([]);
+  const [postsRefreshing, setPostsRefreshing] = useState(false);
   const [booking, setBooking] = useState(false);
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState(null);
+  const [notifPermission, setNotifPermission] = useState(typeof Notification !== "undefined" ? Notification.permission : "unsupported");
   const pollRef = useRef(null);
+  const seenMsgIds = useRef(null);
+  const profileRef = useRef(null);
+  profileRef.current = profile;
+
+  const playBeep = () => {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.15, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.35);
+    } catch {
+      // ignore
+    }
+  };
+
+  const requestNotifPermission = async () => {
+    try {
+      const perm = await Notification.requestPermission();
+      setNotifPermission(perm);
+      if (perm === "granted" && profileRef.current) {
+        const { error } = await subscribeToPush(profileRef.current.phone);
+        if (error) setPushError(error);
+        else setPushEnabled(true);
+      }
+    } catch {
+      setNotifPermission("unsupported");
+    }
+  };
+
+  const [pushError, setPushError] = useState("");
+  const [pushEnabled, setPushEnabled] = useState(false);
 
   const refreshAll = async () => {
     const [a, m] = await Promise.all([loadAppointments(), loadMessages()]);
     setAllAppointments(a);
+
+    const p = profileRef.current;
+    if (p) {
+      const myMsgs = m.filter((x) => x.patientPhone === p.phone);
+      if (seenMsgIds.current) {
+        const freshClinicMsgs = myMsgs.filter((x) => x.from === "clinic" && !seenMsgIds.current.has(x.id));
+        // 탭이 열려있는 동안은 소리로만 알려주고, 실제 알림 표시는 서버 푸시(서비스워커)가 담당한다.
+        // (둘 다 시스템 알림을 띄우면 중복 알림이 뜰 수 있어 여기서는 beep만 사용)
+        if (freshClinicMsgs.length > 0) playBeep();
+      }
+      seenMsgIds.current = new Set(myMsgs.map((x) => x.id));
+    }
     setAllMessages(m);
   };
 
@@ -677,6 +959,7 @@ function PatientApp({ onExit }) {
       const p = loadProfile();
       if (p) {
         await refreshAll();
+        setPosts(await loadPosts());
         setProfile(p);
       }
       setLoading(false);
@@ -693,8 +976,10 @@ function PatientApp({ onExit }) {
 
   const handleLogin = async (p) => {
     saveProfile(p);
-    await refreshAll();
     setProfile(p);
+    profileRef.current = p;
+    await refreshAll();
+    setPosts(await loadPosts());
   };
 
   const handleLogout = () => {
@@ -711,8 +996,14 @@ function PatientApp({ onExit }) {
     const { error } = await insertAppointment({ patientName: profile.name, patientPhone: profile.phone, ...draft });
     const a = await loadAppointments();
     setAllAppointments(a);
-    if (!error) setBooking(false);
-    return !error;
+    if (!error) {
+      setBooking(false);
+      return { ok: true };
+    }
+    if (error.message && error.message.includes("patient_date")) {
+      return { ok: false, reason: "already_booked_today" };
+    }
+    return { ok: false, reason: "time_taken" };
   };
 
   const handleCancel = async (id) => {
@@ -724,6 +1015,22 @@ function PatientApp({ onExit }) {
     await insertMessage({ patientName: profile.name, patientPhone: profile.phone, from: "patient", text });
     const m = await loadMessages();
     setAllMessages(m);
+  };
+
+  const refreshPosts = async () => {
+    setPostsRefreshing(true);
+    setPosts(await loadPosts());
+    setPostsRefreshing(false);
+  };
+
+  const handlePost = async (content) => {
+    await insertPost({ patientPhone: profile.phone, patientName: profile.name, content });
+    setPosts(await loadPosts());
+  };
+
+  const handleDeletePost = async (id) => {
+    await deletePost(id);
+    setPosts((prev) => prev.filter((p) => p.id !== id));
   };
 
   if (loading) {
@@ -748,6 +1055,31 @@ function PatientApp({ onExit }) {
         </button>
       </div>
 
+      {notifPermission !== "granted" && notifPermission !== "unsupported" && (
+        <div className="mx-5 mb-3 rounded-xl px-4 py-3 flex items-center justify-between" style={{ background: COLORS.white }}>
+          <span className="text-xs" style={{ color: COLORS.inkSoft }}>
+            앱을 꺼두어도 병원 답장을 알림으로 받아보시겠어요?
+          </span>
+          <button onClick={requestNotifPermission} className="text-xs font-bold" style={{ color: COLORS.pine }}>
+            알림 켜기
+          </button>
+        </div>
+      )}
+      {pushEnabled && (
+        <div className="mx-5 mb-3 rounded-xl px-4 py-2.5" style={{ background: COLORS.white }}>
+          <span className="text-xs font-semibold" style={{ color: COLORS.pine }}>
+            ✓ 알림이 켜졌어요
+          </span>
+        </div>
+      )}
+      {pushError && (
+        <div className="mx-5 mb-3 rounded-xl px-4 py-2.5" style={{ background: COLORS.white }}>
+          <span className="text-xs" style={{ color: COLORS.danger }}>
+            알림 등록에 실패했어요: {pushError}
+          </span>
+        </div>
+      )}
+
       <div className="flex-1 overflow-hidden">
         {tab === "book" ? (
           <div className="h-full overflow-y-auto px-5 pb-24">
@@ -763,8 +1095,10 @@ function PatientApp({ onExit }) {
               myAppointments.map((a) => <AppointmentTicket key={a.id} appt={a} onCancel={handleCancel} />)
             )}
           </div>
-        ) : (
+        ) : tab === "messages" ? (
           <MessagesView messages={myMessages} onSend={handleSend} />
+        ) : (
+          <CommunityBoard posts={posts} myPhone={profile.phone} onPost={handlePost} onDelete={handleDeletePost} onRefresh={refreshPosts} refreshing={postsRefreshing} />
         )}
       </div>
 
@@ -772,6 +1106,7 @@ function PatientApp({ onExit }) {
         {[
           { id: "book", label: "예약", icon: Calendar },
           { id: "messages", label: "메시지", icon: MessageCircle },
+          { id: "community", label: "커뮤니티", icon: Users2 },
         ].map((t) => {
           const Icon = t.icon;
           const active = tab === t.id;
@@ -791,7 +1126,9 @@ function PatientApp({ onExit }) {
         })}
       </div>
 
-      {booking && <BookingFlow allAppointments={allAppointments} onCreated={handleCreated} onClose={() => setBooking(false)} />}
+      {booking && (
+        <BookingFlow allAppointments={allAppointments} myAppointments={myAppointments} onCreated={handleCreated} onClose={() => setBooking(false)} />
+      )}
     </div>
   );
 }
@@ -1243,6 +1580,58 @@ function NoticeEditor({ initialValue, onSave, onClose }) {
   );
 }
 
+function AdminCommunity({ posts, onDelete, onRefresh, refreshing }) {
+  return (
+    <div className="h-full overflow-y-auto px-5 pb-24">
+      <div className="flex items-center justify-between mb-4">
+        <span className="text-xs font-semibold" style={{ color: COLORS.inkSoft }}>
+          게시글 {posts.length}건
+        </span>
+        <button onClick={onRefresh} className="flex items-center gap-1 text-xs font-medium" style={{ color: COLORS.pine }}>
+          <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} />
+          새로고침
+        </button>
+      </div>
+      {posts.length === 0 ? (
+        <div className="text-center text-sm mt-10" style={{ color: COLORS.inkSoft }}>
+          아직 게시글이 없어요.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {posts.map((p) => (
+            <div key={p.id} className="rounded-xl px-4 py-3.5" style={{ background: COLORS.white }}>
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-sm font-bold" style={{ color: COLORS.ink }}>
+                  {p.displayName}
+                  <span className="ml-2 text-[11px] font-normal" style={{ color: COLORS.slate }}>
+                    {p.patientPhone}
+                  </span>
+                </span>
+                <button
+                  onClick={() => {
+                    if (window.confirm("이 게시글을 삭제할까요?")) onDelete(p.id);
+                  }}
+                  className="flex items-center gap-1 text-xs font-semibold"
+                  style={{ color: COLORS.danger }}
+                >
+                  <Trash2 size={13} />
+                  삭제
+                </button>
+              </div>
+              <div className="text-sm whitespace-pre-wrap" style={{ color: COLORS.ink }}>
+                {p.content}
+              </div>
+              <div className="text-[11px] mt-1.5" style={{ color: COLORS.slate }}>
+                {timeAgo(p.createdAt)}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AdminApp({ onExit }) {
   const [authed, setAuthed] = useState(false);
   const [tab, setTab] = useState("appointments");
@@ -1257,6 +1646,8 @@ function AdminApp({ onExit }) {
   const [messageTarget, setMessageTarget] = useState(null); // { phone, name } | null
   const [notice, setNotice] = useState("");
   const [noticeEditorOpen, setNoticeEditorOpen] = useState(false);
+  const [posts, setPosts] = useState([]);
+  const [postsRefreshing, setPostsRefreshing] = useState(false);
 
   const seenApptIds = useRef(null);
   const seenMsgIds = useRef(null);
@@ -1336,6 +1727,7 @@ function AdminApp({ onExit }) {
       setLoading(true);
       await refresh(false);
       setNotice(await loadNotice());
+      setPosts(await loadPosts());
       setLoading(false);
     })();
     pollRef.current = setInterval(() => refresh(true), 15000);
@@ -1345,6 +1737,17 @@ function AdminApp({ onExit }) {
   const handleSaveNotice = async (text) => {
     await saveNotice(text);
     setNotice(text);
+  };
+
+  const refreshPosts = async () => {
+    setPostsRefreshing(true);
+    setPosts(await loadPosts());
+    setPostsRefreshing(false);
+  };
+
+  const handleDeletePost = async (id) => {
+    await deletePost(id);
+    setPosts((prev) => prev.filter((p) => p.id !== id));
   };
 
   const handleStatusChange = async (id, status) => {
@@ -1425,7 +1828,7 @@ function AdminApp({ onExit }) {
             onRefresh={() => refresh(false)}
             refreshing={refreshing}
           />
-        ) : (
+        ) : tab === "messages" ? (
           <AdminMessages
             messages={messages}
             appointments={appointments}
@@ -1436,6 +1839,8 @@ function AdminApp({ onExit }) {
             openTarget={messageTarget}
             onConsumeOpenTarget={() => setMessageTarget(null)}
           />
+        ) : (
+          <AdminCommunity posts={posts} onDelete={handleDeletePost} onRefresh={refreshPosts} refreshing={postsRefreshing} />
         )}
       </div>
 
@@ -1443,6 +1848,7 @@ function AdminApp({ onExit }) {
         {[
           { id: "appointments", label: "예약 관리", icon: Calendar, badge: newApptCount },
           { id: "messages", label: "메시지 관리", icon: Users, badge: newMsgCount },
+          { id: "community", label: "커뮤니티 관리", icon: Users2, badge: 0 },
         ].map((t) => {
           const Icon = t.icon;
           const active = tab === t.id;
