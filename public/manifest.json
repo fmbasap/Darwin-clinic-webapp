@@ -1,6 +1,6 @@
 {
   "name": "다윈 통증의학과",
-  "short_name": "다윈의원",
+  "short_name": "Dawin",
   "description": "다윈 통증의학과 환자용 예약·메시지 앱",
   "start_url": "/",
   "display": "standalone",

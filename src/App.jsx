@@ -210,9 +210,30 @@ async function insertMessage(msg) {
     },
   ]);
   if (error) console.error(error);
+  // 새 메시지가 오가면 그 대화는 자동으로 다시 열린 상태로 되돌린다.
+  await setConversationClosed(msg.patientPhone, false);
 }
 async function deleteMessage(id) {
   const { error } = await supabase.from("messages").delete().eq("id", id);
+  if (error) console.error(error);
+}
+
+async function loadConversationStatuses() {
+  const { data, error } = await supabase.from("conversation_status").select("*");
+  if (error) {
+    console.error(error);
+    return {};
+  }
+  const map = {};
+  data.forEach((r) => {
+    map[r.patient_phone] = r.closed;
+  });
+  return map;
+}
+async function setConversationClosed(patientPhone, closed) {
+  const { error } = await supabase
+    .from("conversation_status")
+    .upsert({ patient_phone: patientPhone, closed, updated_at: new Date().toISOString() }, { onConflict: "patient_phone" });
   if (error) console.error(error);
 }
 
@@ -1433,9 +1454,10 @@ function ComposeMessage({ candidates, onStart, onClose }) {
   );
 }
 
-function AdminMessages({ messages, appointments, onReply, onDelete, onRefresh, refreshing, openTarget, onConsumeOpenTarget }) {
+function AdminMessages({ messages, appointments, closedMap, onToggleClosed, onReply, onDelete, onRefresh, refreshing, openTarget, onConsumeOpenTarget }) {
   const [openThread, setOpenThread] = useState(null); // { phone, name } | null
   const [composeOpen, setComposeOpen] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
   const [reply, setReply] = useState("");
   const bottomRef = useRef(null);
 
@@ -1452,9 +1474,12 @@ function AdminMessages({ messages, appointments, onReply, onDelete, onRefresh, r
     threads[m.patientPhone] = threads[m.patientPhone] || { name: m.patientName, phone: m.patientPhone, items: [] };
     threads[m.patientPhone].items.push(m);
   });
-  const threadList = Object.values(threads)
+  const allThreadList = Object.values(threads)
     .map((t) => ({ ...t, items: t.items.sort((a, b) => new Date(a.at) - new Date(b.at)) }))
     .sort((a, b) => new Date(b.items.at(-1)?.at || 0) - new Date(a.items.at(-1)?.at || 0));
+
+  const threadList = allThreadList.filter((t) => !closedMap[t.phone]);
+  const archivedList = allThreadList.filter((t) => closedMap[t.phone]);
 
   // 예약은 있지만 아직 대화가 없는 환자 목록 (관리자가 먼저 말을 걸 수 있는 대상)
   const knownPatients = {};
@@ -1469,6 +1494,7 @@ function AdminMessages({ messages, appointments, onReply, onDelete, onRefresh, r
 
   if (openThread) {
     const items = threads[openThread.phone]?.items || [];
+    const isClosed = !!closedMap[openThread.phone];
     const send = () => {
       if (!reply.trim()) return;
       onReply(openThread.phone, openThread.name, reply.trim());
@@ -1476,18 +1502,27 @@ function AdminMessages({ messages, appointments, onReply, onDelete, onRefresh, r
     };
     return (
       <div className="flex flex-col h-full">
-        <div className="flex items-center gap-2 px-4 py-3" style={{ borderBottom: `1px solid ${COLORS.paperDeep}` }}>
-          <button onClick={() => setOpenThread(null)} aria-label="목록으로">
-            <ChevronLeft size={20} color={COLORS.ink} />
-          </button>
-          <div>
-            <div className="font-bold text-sm" style={{ color: COLORS.ink }}>
-              {openThread.name}
-            </div>
-            <div className="text-[11px]" style={{ color: COLORS.inkSoft }}>
-              {openThread.phone}
+        <div className="flex items-center justify-between px-4 py-3" style={{ borderBottom: `1px solid ${COLORS.paperDeep}` }}>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setOpenThread(null)} aria-label="목록으로">
+              <ChevronLeft size={20} color={COLORS.ink} />
+            </button>
+            <div>
+              <div className="font-bold text-sm" style={{ color: COLORS.ink }}>
+                {openThread.name}
+              </div>
+              <div className="text-[11px]" style={{ color: COLORS.inkSoft }}>
+                {openThread.phone}
+              </div>
             </div>
           </div>
+          <button
+            onClick={() => onToggleClosed(openThread.phone, !isClosed)}
+            className="text-xs font-semibold px-2.5 py-1.5 rounded-lg"
+            style={{ color: isClosed ? COLORS.pine : COLORS.danger, background: COLORS.paper }}
+          >
+            {isClosed ? "다시 열기" : "대화 종료"}
+          </button>
         </div>
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
           {items.length === 0 && (
@@ -1600,6 +1635,40 @@ function AdminMessages({ messages, appointments, onReply, onDelete, onRefresh, r
               </button>
             );
           })}
+        </div>
+      )}
+
+      {archivedList.length > 0 && (
+        <div className="mt-5">
+          <button onClick={() => setShowArchived((v) => !v)} className="text-xs font-semibold mb-2" style={{ color: COLORS.slate }}>
+            보관함 ({archivedList.length}) {showArchived ? "숨기기" : "보기"}
+          </button>
+          {showArchived && (
+            <div className="space-y-2">
+              {archivedList.map((t) => {
+                const last = t.items.at(-1);
+                return (
+                  <button
+                    key={t.phone}
+                    onClick={() => setOpenThread({ phone: t.phone, name: t.name })}
+                    className="w-full flex items-center justify-between rounded-xl px-4 py-3.5 opacity-60"
+                    style={{ background: COLORS.white }}
+                  >
+                    <div className="text-left">
+                      <div className="font-bold text-sm" style={{ color: COLORS.ink }}>
+                        {t.name}
+                      </div>
+                      <div className="text-xs mt-0.5 truncate max-w-[220px]" style={{ color: COLORS.inkSoft }}>
+                        {last.from === "clinic" ? "나: " : ""}
+                        {last.text}
+                      </div>
+                    </div>
+                    <ChevronLeft size={16} color={COLORS.slate} style={{ transform: "rotate(180deg)" }} />
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -1726,6 +1795,7 @@ function AdminApp({ onExit }) {
   const [noticeEditorOpen, setNoticeEditorOpen] = useState(false);
   const [posts, setPosts] = useState([]);
   const [postsRefreshing, setPostsRefreshing] = useState(false);
+  const [closedMap, setClosedMap] = useState({});
 
   const seenApptIds = useRef(null);
   const seenMsgIds = useRef(null);
@@ -1796,6 +1866,7 @@ function AdminApp({ onExit }) {
     seenMsgIds.current = new Set(m.map((x) => x.id));
     setAppointments(a);
     setMessages(m);
+    setClosedMap(await loadConversationStatuses());
     if (!silent) setRefreshing(false);
   };
 
@@ -1806,6 +1877,7 @@ function AdminApp({ onExit }) {
       await refresh(false);
       setNotice(await loadNotice());
       setPosts(await loadPosts());
+      setClosedMap(await loadConversationStatuses());
       setLoading(false);
     })();
     pollRef.current = setInterval(() => refresh(true), 15000);
@@ -1815,6 +1887,11 @@ function AdminApp({ onExit }) {
   const handleSaveNotice = async (text) => {
     await saveNotice(text);
     setNotice(text);
+  };
+
+  const handleToggleClosed = async (phone, closed) => {
+    setClosedMap((prev) => ({ ...prev, [phone]: closed }));
+    await setConversationClosed(phone, closed);
   };
 
   const refreshPosts = async () => {
@@ -1910,6 +1987,8 @@ function AdminApp({ onExit }) {
           <AdminMessages
             messages={messages}
             appointments={appointments}
+            closedMap={closedMap}
+            onToggleClosed={handleToggleClosed}
             onReply={handleReply}
             onDelete={handleDeleteMessage}
             onRefresh={() => refresh(false)}
