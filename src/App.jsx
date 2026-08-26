@@ -112,8 +112,8 @@ async function unsubscribeFromPush() {
     return { error: e.message || "알림 끄기에 실패했어요." };
   }
 }
-const STATUS_LABEL = { confirmed: "확정", done: "진료완료", cancelled: "취소" };
-const STATUS_COLOR = { confirmed: COLORS.pine, done: COLORS.slate, cancelled: COLORS.danger };
+const STATUS_LABEL = { pending: "예약 대기", confirmed: "확정", done: "진료완료", cancelled: "취소" };
+const STATUS_COLOR = { pending: COLORS.amber, confirmed: COLORS.pine, done: COLORS.slate, cancelled: COLORS.danger };
 
 function nextDays(n) {
   const days = [];
@@ -180,7 +180,7 @@ async function insertAppointment(appt) {
       date_label: appt.dateLabel,
       weekday: appt.weekday,
       appt_time: appt.time,
-      status: "confirmed",
+      status: "pending",
     },
   ]);
   if (error && error.code !== "23505") console.error(error);
@@ -756,8 +756,11 @@ function BookingFlow({ allAppointments, myAppointments, onCreated, onClose }) {
                 style={{ background: COLORS.pine, color: COLORS.white }}
               >
                 {submitting ? <Loader2 size={18} className="animate-spin" /> : <Check size={18} />}
-                예약 확정하기
+                예약 신청하기
               </button>
+              <p className="text-[11px] text-center mt-2" style={{ color: COLORS.slate }}>
+                신청 후 병원에서 확인하면 예약이 확정돼요.
+              </p>
             </div>
           )}
         </div>
@@ -1297,12 +1300,18 @@ function AdminAppointments({ appointments, onStatusChange, onMessage, onRefresh,
       grouped[k].push(a);
     });
   const cancelled = appointments.filter((a) => a.status === "cancelled");
+  const pendingCount = appointments.filter((a) => a.status === "pending").length;
 
   return (
     <div className="h-full overflow-y-auto px-5 pb-24">
       <div className="flex items-center justify-between mb-4">
         <span className="text-xs font-semibold" style={{ color: COLORS.inkSoft }}>
           전체 예약 {appointments.filter((a) => a.status !== "cancelled").length}건
+          {pendingCount > 0 && (
+            <span className="ml-2 font-bold" style={{ color: COLORS.amber }}>
+              · 확인 대기 {pendingCount}건
+            </span>
+          )}
         </span>
         <button onClick={onRefresh} className="flex items-center gap-1 text-xs font-medium" style={{ color: COLORS.pine }}>
           <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} />
@@ -1339,7 +1348,12 @@ function AdminAppointments({ appointments, onStatusChange, onMessage, onRefresh,
                       </span>
                     </div>
                     <div className="flex gap-2 mt-2.5">
-                      {a.status === "done" ? (
+                      {a.status === "pending" ? (
+                        <button onClick={() => onStatusChange(a.id, "confirmed")} className="flex-1 flex items-center justify-center gap-1 rounded-lg py-1.5 text-xs font-semibold" style={{ background: COLORS.paper, color: COLORS.pine }}>
+                          <Check size={13} />
+                          확정하기
+                        </button>
+                      ) : a.status === "done" ? (
                         <button onClick={() => onStatusChange(a.id, "confirmed")} className="flex-1 flex items-center justify-center gap-1 rounded-lg py-1.5 text-xs font-semibold" style={{ background: COLORS.paper, color: COLORS.slate }}>
                           <RotateCcw size={13} />
                           되돌리기
