@@ -8,4 +8,9 @@
 
 body {
   margin: 0;
+  /* 아이폰 홈 화면 앱 실행 시 상태바(노치)와 하단 홈 인디케이터에
+     내용이 가려지지 않도록 안전 영역만큼 여백을 준다 */
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+  min-height: 100vh;
 }
