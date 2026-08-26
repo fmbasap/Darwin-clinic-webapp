@@ -1367,20 +1367,10 @@ function AdminAppointments({ appointments, onStatusChange, onMessage, onRefresh,
                       </span>
                     </div>
                     <div className="flex gap-2 mt-2.5">
-                      {a.status === "pending" ? (
+                      {a.status === "pending" && (
                         <button onClick={() => onStatusChange(a.id, "confirmed")} className="flex-1 flex items-center justify-center gap-1 rounded-lg py-1.5 text-xs font-semibold" style={{ background: COLORS.paper, color: COLORS.pine }}>
                           <Check size={13} />
                           확정하기
-                        </button>
-                      ) : a.status === "done" ? (
-                        <button onClick={() => onStatusChange(a.id, "confirmed")} className="flex-1 flex items-center justify-center gap-1 rounded-lg py-1.5 text-xs font-semibold" style={{ background: COLORS.paper, color: COLORS.slate }}>
-                          <RotateCcw size={13} />
-                          되돌리기
-                        </button>
-                      ) : (
-                        <button onClick={() => onStatusChange(a.id, "done")} className="flex-1 flex items-center justify-center gap-1 rounded-lg py-1.5 text-xs font-semibold" style={{ background: COLORS.paper, color: COLORS.pine }}>
-                          <CheckCircle2 size={13} />
-                          진료완료
                         </button>
                       )}
                       <button onClick={() => onMessage(a.patientPhone, a.patientName)} className="flex-1 flex items-center justify-center gap-1 rounded-lg py-1.5 text-xs font-semibold" style={{ background: COLORS.paper, color: COLORS.slate }}>
