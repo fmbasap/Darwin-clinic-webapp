@@ -223,6 +223,14 @@ async function deleteConversation(patientPhone) {
   await supabase.from("conversation_status").delete().eq("patient_phone", patientPhone);
 }
 
+async function deletePatientData(patientPhone) {
+  await supabase.from("appointments").delete().eq("patient_phone", patientPhone);
+  await supabase.from("messages").delete().eq("patient_phone", patientPhone);
+  await supabase.from("conversation_status").delete().eq("patient_phone", patientPhone);
+  await supabase.from("push_subscriptions").delete().eq("patient_phone", patientPhone);
+  await supabase.from("community_posts").delete().eq("patient_phone", patientPhone);
+}
+
 async function loadConversationStatuses() {
   const { data, error } = await supabase.from("conversation_status").select("*");
   if (error) {
@@ -1804,7 +1812,7 @@ function AdminCommunity({ posts, onDelete, onRefresh, refreshing }) {
   );
 }
 
-function AdminCustomers({ appointments, messages, onMessage, onRefresh, refreshing }) {
+function AdminCustomers({ appointments, messages, onMessage, onDeletePatient, onRefresh, refreshing }) {
   const [query, setQuery] = useState("");
 
   const customers = {};
@@ -1878,9 +1886,23 @@ function AdminCustomers({ appointments, messages, onMessage, onRefresh, refreshi
                   메시지
                 </button>
               </div>
-              <div className="flex items-center gap-3 mt-2 text-[11px]" style={{ color: COLORS.slate }}>
-                <span>예약 {c.apptCount}건</span>
-                {c.lastVisit && <span>최근 예약 {c.lastVisit}</span>}
+              <div className="flex items-center justify-between mt-2">
+                <div className="flex items-center gap-3 text-[11px]" style={{ color: COLORS.slate }}>
+                  <span>예약 {c.apptCount}건</span>
+                  {c.lastVisit && <span>최근 예약 {c.lastVisit}</span>}
+                </div>
+                <button
+                  onClick={() => {
+                    if (window.confirm(`${c.name}님의 모든 데이터(예약, 메시지, 게시글)를 삭제할까요? 되돌릴 수 없어요.`)) {
+                      onDeletePatient(c.phone);
+                    }
+                  }}
+                  className="flex items-center gap-1 text-[11px] font-semibold"
+                  style={{ color: COLORS.danger }}
+                >
+                  <Trash2 size={12} />
+                  환자 삭제
+                </button>
               </div>
             </div>
           ))}
@@ -2046,6 +2068,18 @@ function AdminApp({ onExit }) {
     });
   };
 
+  const handleDeletePatient = async (phone) => {
+    await deletePatientData(phone);
+    setAppointments((prev) => prev.filter((a) => a.patientPhone !== phone));
+    setMessages((prev) => prev.filter((m) => m.patientPhone !== phone));
+    setPosts((prev) => prev.filter((p) => p.patientPhone !== phone));
+    setClosedMap((prev) => {
+      const next = { ...prev };
+      delete next[phone];
+      return next;
+    });
+  };
+
   if (!authed) {
     return <AdminLogin onSuccess={() => setAuthed(true)} onBack={onExit} />;
   }
@@ -2129,6 +2163,7 @@ function AdminApp({ onExit }) {
               setTab("messages");
               setNewMsgCount(0);
             }}
+            onDeletePatient={handleDeletePatient}
             onRefresh={() => refresh(false)}
             refreshing={refreshing}
           />
