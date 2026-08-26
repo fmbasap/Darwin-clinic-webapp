@@ -217,6 +217,11 @@ async function deleteMessage(id) {
   const { error } = await supabase.from("messages").delete().eq("id", id);
   if (error) console.error(error);
 }
+async function deleteConversation(patientPhone) {
+  const { error } = await supabase.from("messages").delete().eq("patient_phone", patientPhone);
+  if (error) console.error(error);
+  await supabase.from("conversation_status").delete().eq("patient_phone", patientPhone);
+}
 
 async function loadConversationStatuses() {
   const { data, error } = await supabase.from("conversation_status").select("*");
@@ -1135,8 +1140,8 @@ function PatientApp({ onExit }) {
   }
 
   return (
-    <div className="min-h-screen flex flex-col" style={{ background: COLORS.paper, fontFamily: "'Pretendard', 'Apple SD Gothic Neo', sans-serif" }}>
-      <div className="px-5 pt-6 pb-4 flex items-start justify-between">
+    <div className="flex flex-col" style={{ height: "100dvh", background: COLORS.paper, fontFamily: "'Pretendard', 'Apple SD Gothic Neo', sans-serif" }}>
+      <div className="px-5 pb-4 flex items-start justify-between" style={{ paddingTop: "calc(1.5rem + env(safe-area-inset-top))" }}>
         <AppHeader title="PATIENT PORTAL" subtitle={`${profile.name}님, 안녕하세요`} />
         <button onClick={handleLogout} className="flex items-center gap-1 text-xs font-medium mt-1" style={{ color: COLORS.slate }}>
           <LogOut size={14} />
@@ -1196,7 +1201,7 @@ function PatientApp({ onExit }) {
         )}
       </div>
 
-      <div className="flex" style={{ borderTop: `1px solid ${COLORS.paperDeep}`, background: COLORS.paper }}>
+      <div className="flex" style={{ borderTop: `1px solid ${COLORS.paperDeep}`, background: COLORS.paper, paddingBottom: "env(safe-area-inset-bottom)" }}>
         {[
           { id: "book", label: "예약", icon: Calendar },
           { id: "messages", label: "메시지", icon: MessageCircle },
@@ -1326,7 +1331,12 @@ function AdminAppointments({ appointments, onStatusChange, onMessage, onRefresh,
                       </span>
                     </div>
                     <div className="flex gap-2 mt-2.5">
-                      {a.status !== "done" && (
+                      {a.status === "done" ? (
+                        <button onClick={() => onStatusChange(a.id, "confirmed")} className="flex-1 flex items-center justify-center gap-1 rounded-lg py-1.5 text-xs font-semibold" style={{ background: COLORS.paper, color: COLORS.slate }}>
+                          <RotateCcw size={13} />
+                          되돌리기
+                        </button>
+                      ) : (
                         <button onClick={() => onStatusChange(a.id, "done")} className="flex-1 flex items-center justify-center gap-1 rounded-lg py-1.5 text-xs font-semibold" style={{ background: COLORS.paper, color: COLORS.pine }}>
                           <CheckCircle2 size={13} />
                           진료완료
@@ -1454,7 +1464,7 @@ function ComposeMessage({ candidates, onStart, onClose }) {
   );
 }
 
-function AdminMessages({ messages, appointments, closedMap, onToggleClosed, onReply, onDelete, onRefresh, refreshing, openTarget, onConsumeOpenTarget }) {
+function AdminMessages({ messages, appointments, closedMap, onToggleClosed, onReply, onDelete, onDeleteConversation, onRefresh, refreshing, openTarget, onConsumeOpenTarget }) {
   const [openThread, setOpenThread] = useState(null); // { phone, name } | null
   const [composeOpen, setComposeOpen] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
@@ -1516,13 +1526,28 @@ function AdminMessages({ messages, appointments, closedMap, onToggleClosed, onRe
               </div>
             </div>
           </div>
-          <button
-            onClick={() => onToggleClosed(openThread.phone, !isClosed)}
-            className="text-xs font-semibold px-2.5 py-1.5 rounded-lg"
-            style={{ color: isClosed ? COLORS.pine : COLORS.danger, background: COLORS.paper }}
-          >
-            {isClosed ? "다시 열기" : "대화 종료"}
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => onToggleClosed(openThread.phone, !isClosed)}
+              className="text-xs font-semibold px-2.5 py-1.5 rounded-lg"
+              style={{ color: isClosed ? COLORS.pine : COLORS.danger, background: COLORS.paper }}
+            >
+              {isClosed ? "다시 열기" : "대화 종료"}
+            </button>
+            <button
+              onClick={() => {
+                if (window.confirm(`${openThread.name}님과의 대화 전체를 삭제할까요? 되돌릴 수 없어요.`)) {
+                  onDeleteConversation(openThread.phone);
+                  setOpenThread(null);
+                }
+              }}
+              aria-label="대화 삭제"
+              className="p-1.5 rounded-lg"
+              style={{ background: COLORS.paper }}
+            >
+              <Trash2 size={14} color={COLORS.danger} />
+            </button>
+          </div>
         </div>
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
           {items.length === 0 && (
@@ -1925,6 +1950,16 @@ function AdminApp({ onExit }) {
     setMessages((prev) => prev.filter((m) => m.id !== id));
   };
 
+  const handleDeleteConversation = async (phone) => {
+    await deleteConversation(phone);
+    setMessages((prev) => prev.filter((m) => m.patientPhone !== phone));
+    setClosedMap((prev) => {
+      const next = { ...prev };
+      delete next[phone];
+      return next;
+    });
+  };
+
   if (!authed) {
     return <AdminLogin onSuccess={() => setAuthed(true)} onBack={onExit} />;
   }
@@ -1938,7 +1973,7 @@ function AdminApp({ onExit }) {
   }
 
   return (
-    <div className="min-h-screen flex flex-col relative" style={{ background: COLORS.paper, fontFamily: "'Pretendard', 'Apple SD Gothic Neo', sans-serif" }}>
+    <div className="flex flex-col relative" style={{ height: "100dvh", background: COLORS.paper, fontFamily: "'Pretendard', 'Apple SD Gothic Neo', sans-serif" }}>
       {toast && (
         <div className="fixed top-3 left-1/2 z-30 rounded-xl px-4 py-3 shadow-lg" style={{ background: COLORS.pineDeep, color: COLORS.white, transform: "translateX(-50%)", width: "88%", maxWidth: 360 }}>
           <div className="text-sm font-bold">{toast.title}</div>
@@ -1946,7 +1981,7 @@ function AdminApp({ onExit }) {
         </div>
       )}
 
-      <div className="px-5 pt-6 pb-4 flex items-start justify-between">
+      <div className="px-5 pb-4 flex items-start justify-between" style={{ paddingTop: "calc(1.5rem + env(safe-area-inset-top))" }}>
         <AppHeader title="STAFF DASHBOARD" subtitle={DOCTOR.name} />
         <div className="flex flex-col items-end gap-2 mt-1">
           <button onClick={() => setAuthed(false)} className="flex items-center gap-1 text-xs font-medium" style={{ color: COLORS.slate }}>
@@ -1991,6 +2026,7 @@ function AdminApp({ onExit }) {
             onToggleClosed={handleToggleClosed}
             onReply={handleReply}
             onDelete={handleDeleteMessage}
+            onDeleteConversation={handleDeleteConversation}
             onRefresh={() => refresh(false)}
             refreshing={refreshing}
             openTarget={messageTarget}
@@ -2001,7 +2037,7 @@ function AdminApp({ onExit }) {
         )}
       </div>
 
-      <div className="flex" style={{ borderTop: `1px solid ${COLORS.paperDeep}`, background: COLORS.paper }}>
+      <div className="flex" style={{ borderTop: `1px solid ${COLORS.paperDeep}`, background: COLORS.paper, paddingBottom: "env(safe-area-inset-bottom)" }}>
         {[
           { id: "appointments", label: "예약 관리", icon: Calendar, badge: newApptCount },
           { id: "messages", label: "메시지 관리", icon: Users, badge: newMsgCount },
