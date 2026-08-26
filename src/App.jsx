@@ -937,7 +937,21 @@ function PatientApp({ onExit }) {
     }
   };
 
+  const isStandalone =
+    typeof window !== "undefined" && (window.navigator.standalone === true || window.matchMedia("(display-mode: standalone)").matches);
+  const isIOS = typeof navigator !== "undefined" && /iphone|ipad|ipod/i.test(navigator.userAgent);
+
   const requestNotifPermission = async () => {
+    setPushError("");
+    if (isIOS && !isStandalone) {
+      setPushError("아이폰에서는 반드시 '홈 화면에 추가'로 설치한 아이콘으로 열어야 알림을 켤 수 있어요. 사파리 공유 버튼 → 홈 화면에 추가를 먼저 해주세요.");
+      return;
+    }
+    if (typeof Notification === "undefined") {
+      setNotifPermission("unsupported");
+      setPushError("이 브라우저에서는 알림 기능을 지원하지 않아요.");
+      return;
+    }
     try {
       const perm = await Notification.requestPermission();
       setNotifPermission(perm);
@@ -946,9 +960,12 @@ function PatientApp({ onExit }) {
         const { error } = await subscribeToPush(profileRef.current.phone);
         if (error) setPushError(error);
         else setPushEnabled(true);
+      } else if (perm === "denied") {
+        setPushError("알림이 차단되어 있어요. 기기 설정에서 이 앱의 알림 권한을 허용해주세요.");
       }
-    } catch {
+    } catch (e) {
       setNotifPermission("unsupported");
+      setPushError(e.message || "알림 권한 요청 중 문제가 발생했어요.");
     }
   };
 
@@ -1096,9 +1113,11 @@ function PatientApp({ onExit }) {
       {!pushEnabled && notifPermission !== "unsupported" && (
         <div className="mx-5 mb-3 rounded-xl px-4 py-3 flex items-center justify-between" style={{ background: COLORS.white }}>
           <span className="text-xs" style={{ color: COLORS.inkSoft }}>
-            앱을 꺼두어도 병원 답장을 알림으로 받아보시겠어요?
+            {isIOS && !isStandalone
+              ? "아이폰은 '홈 화면에 추가'로 설치해야 알림을 받을 수 있어요"
+              : "앱을 꺼두어도 병원 답장을 알림으로 받아보시겠어요?"}
           </span>
-          <button onClick={requestNotifPermission} className="text-xs font-bold" style={{ color: COLORS.pine }}>
+          <button onClick={requestNotifPermission} className="text-xs font-bold whitespace-nowrap" style={{ color: COLORS.pine }}>
             알림 켜기
           </button>
         </div>
