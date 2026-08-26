@@ -48,10 +48,15 @@ const DOCTOR = { name: "신관호 원장", title: "통증의학과 전문의" };
 const ADMIN_PIN = "2025"; // 데모용 고정 PIN. 실제 운영 시 Supabase Auth 등 진짜 인증으로 교체 필요
 
 const TIMES = ["10:00", "10:30", "11:00", "11:30", "12:00", "14:00", "14:30", "15:00", "15:30", "16:00", "16:30", "17:00", "17:30"];
+const SATURDAY_TIMES = ["10:00", "10:30", "11:00", "11:30", "12:00", "12:30", "13:00", "13:30"];
 const CLOSED_WEEKDAYS = [4, 0]; // 0=일 1=월 2=화 3=수 4=목 5=금 6=토 (목요일·일요일 정기휴무)
 const WEEKDAY_NAMES = ["일", "월", "화", "수", "목", "금", "토"];
 const CLOSED_DAYS_LABEL = CLOSED_WEEKDAYS.map((i) => WEEKDAY_NAMES[i]).join("·");
-const CLINIC_HOURS_LABEL = "10:00~18:00 (점심 12:30~14:00)";
+const CLINIC_HOURS_LABEL = "평일 10:00~18:00 (점심 12:30~14:00) · 토요일 10:00~14:00";
+
+function timesForWeekday(weekdayIndex) {
+  return weekdayIndex === 6 ? SATURDAY_TIMES : TIMES;
+}
 
 // 서버(Edge Function)에서 발급한 VAPID 공개키와 반드시 짝이 맞아야 함
 const VAPID_PUBLIC_KEY = "BOWhM_xADN6MuPRxAIjRVn8KWta-2TqDXhLMFIja0eCf4vFPuTO9E0RYjH68_cTatzlek8k3hg6Z0jvD00_a6Mw";
@@ -126,6 +131,7 @@ function nextDays(n) {
       key: d.toISOString().slice(0, 10),
       label: `${d.getMonth() + 1}.${d.getDate()}`,
       weekday: weekday[d.getDay()],
+      weekdayIndex: d.getDay(),
       closed: CLOSED_WEEKDAYS.includes(d.getDay()),
     });
   }
@@ -590,6 +596,8 @@ function BookingFlow({ allAppointments, myAppointments, onCreated, onClose }) {
     ? new Set(allAppointments.filter((a) => a.dateLabel === day.label && a.status !== "cancelled").map((a) => a.time))
     : new Set();
 
+  const availableTimes = day ? timesForWeekday(day.weekdayIndex) : TIMES;
+
   const pickDay = (d) => {
     if (myActiveDates.has(d.label)) {
       setConflictMsg("이미 이 날짜에 예약이 있어요. 하루에 한 건만 예약 가능해요.");
@@ -708,6 +716,11 @@ function BookingFlow({ allAppointments, myAppointments, onCreated, onClose }) {
               <h2 className="text-lg font-bold mb-1" style={{ color: COLORS.ink }}>
                 시간을 선택해주세요
               </h2>
+              {day && day.weekdayIndex === 6 && (
+                <p className="text-xs mb-2" style={{ color: COLORS.slate }}>
+                  토요일은 10:00~14:00까지 진료해요.
+                </p>
+              )}
               {conflictMsg && (
                 <p className="text-xs mb-3 font-medium" style={{ color: COLORS.danger }}>
                   {conflictMsg}
@@ -715,7 +728,7 @@ function BookingFlow({ allAppointments, myAppointments, onCreated, onClose }) {
               )}
               {!conflictMsg && <div className="mb-3" />}
               <div className="grid grid-cols-3 gap-2">
-                {TIMES.map((t) =>
+                {availableTimes.map((t) =>
                   bookedTimesForDay.has(t) ? (
                     <div key={t} className="rounded-xl py-2.5 text-sm font-semibold text-center opacity-50" style={{ background: COLORS.paperDeep, color: COLORS.inkSoft }}>
                       마감
@@ -1343,7 +1356,13 @@ function AdminAppointments({ appointments, onStatusChange, onMessage, onRefresh,
                           {a.patientPhone}
                         </div>
                       </div>
-                      <span className="text-[11px] font-bold px-2 py-0.5 rounded-full" style={{ color: STATUS_COLOR[a.status], background: COLORS.paper }}>
+                      <span
+                        onClick={() => a.status === "confirmed" && onStatusChange(a.id, "pending")}
+                        className="text-[11px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1"
+                        style={{ color: STATUS_COLOR[a.status], background: COLORS.paper, cursor: a.status === "confirmed" ? "pointer" : "default" }}
+                        title={a.status === "confirmed" ? "눌러서 대기중으로 되돌리기" : undefined}
+                      >
+                        {a.status === "confirmed" && <RotateCcw size={10} />}
                         {STATUS_LABEL[a.status]}
                       </span>
                     </div>
