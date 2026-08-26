@@ -17,6 +17,7 @@ import {
   CheckCircle2,
   XCircle,
   ArrowLeft,
+  RotateCcw,
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
@@ -125,7 +126,8 @@ async function insertAppointment(appt) {
 }
 async function updateAppointmentStatus(id, status) {
   const { error } = await supabase.from("appointments").update({ status }).eq("id", id);
-  if (error) console.error(error);
+  if (error && error.code !== "23505") console.error(error);
+  return { error };
 }
 
 async function loadMessages() {
@@ -922,9 +924,19 @@ function AdminAppointments({ appointments, onStatusChange, onMessage, onRefresh,
           </div>
           <div className="space-y-2">
             {cancelled.map((a) => (
-              <div key={a.id} className="rounded-xl px-4 py-3 opacity-60" style={{ background: COLORS.white }}>
-                <div className="text-sm" style={{ color: COLORS.ink }}>
-                  {a.dateLabel} {a.time} · {a.patientName}
+              <div key={a.id} className="rounded-xl px-4 py-3" style={{ background: COLORS.white }}>
+                <div className="flex items-center justify-between">
+                  <div className="text-sm opacity-60" style={{ color: COLORS.ink }}>
+                    {a.dateLabel} {a.time} · {a.patientName}
+                  </div>
+                  <button
+                    onClick={() => onStatusChange(a.id, "confirmed")}
+                    className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold"
+                    style={{ background: COLORS.paper, color: COLORS.pine }}
+                  >
+                    <RotateCcw size={13} />
+                    복구
+                  </button>
                 </div>
               </div>
             ))}
@@ -1336,7 +1348,11 @@ function AdminApp({ onExit }) {
   };
 
   const handleStatusChange = async (id, status) => {
-    await updateAppointmentStatus(id, status);
+    const { error } = await updateAppointmentStatus(id, status);
+    if (error && error.code === "23505") {
+      window.alert("이 시간은 이미 다른 예약으로 채워져서 복구할 수 없어요. 환자에게 다른 시간으로 다시 예약하도록 안내해주세요.");
+      return;
+    }
     setAppointments((prev) => prev.map((a) => (a.id === id ? { ...a, status } : a)));
   };
 
