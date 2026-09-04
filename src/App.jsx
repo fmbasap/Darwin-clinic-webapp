@@ -19,6 +19,8 @@ import {
   ArrowLeft,
   RotateCcw,
   Users2,
+  FileText,
+  Dumbbell,
   Trash2,
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
@@ -117,7 +119,50 @@ async function unsubscribeFromPush() {
     return { error: e.message || "알림 끄기에 실패했어요." };
   }
 }
-const STATUS_LABEL = { pending: "예약 대기", confirmed: "확정", done: "진료완료", cancelled: "취소" };
+
+async function adminSubscribeToPush() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    return { error: "이 브라우저는 푸시 알림을 지원하지 않아요." };
+  }
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    let subscription = await registration.pushManager.getSubscription();
+    if (!subscription) {
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+      });
+    }
+    const json = subscription.toJSON();
+    const { error } = await supabase.from("admin_push_subscriptions").upsert(
+      { endpoint: json.endpoint, p256dh: json.keys.p256dh, auth: json.keys.auth },
+      { onConflict: "endpoint" }
+    );
+    if (error) return { error: error.message };
+    return { error: null };
+  } catch (e) {
+    return { error: e.message || "알림 등록에 실패했어요." };
+  }
+}
+
+async function adminUnsubscribeFromPush() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    return { error: null };
+  }
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    if (subscription) {
+      const endpoint = subscription.endpoint;
+      await supabase.from("admin_push_subscriptions").delete().eq("endpoint", endpoint);
+      await subscription.unsubscribe();
+    }
+    return { error: null };
+  } catch (e) {
+    return { error: e.message || "알림 끄기에 실패했어요." };
+  }
+}
+const STATUS_LABEL = { pending: "예약 대기", confirmed: "예약 확정", done: "진료완료", cancelled: "취소" };
 const STATUS_COLOR = { pending: COLORS.amber, confirmed: COLORS.pine, done: COLORS.slate, cancelled: COLORS.danger };
 
 function nextDays(n) {
@@ -235,6 +280,8 @@ async function deletePatientData(patientPhone) {
   await supabase.from("conversation_status").delete().eq("patient_phone", patientPhone);
   await supabase.from("push_subscriptions").delete().eq("patient_phone", patientPhone);
   await supabase.from("community_posts").delete().eq("patient_phone", patientPhone);
+  await supabase.from("intake_forms").delete().eq("patient_phone", patientPhone);
+  await supabase.from("exercise_logs").delete().eq("patient_phone", patientPhone);
 }
 
 async function loadConversationStatuses() {
@@ -254,6 +301,84 @@ async function setConversationClosed(patientPhone, closed) {
     .from("conversation_status")
     .upsert({ patient_phone: patientPhone, closed, updated_at: new Date().toISOString() }, { onConflict: "patient_phone" });
   if (error) console.error(error);
+}
+
+// ---- 사전 문진표 ----
+const PAIN_AREAS = ["목", "어깨", "허리", "무릎", "팔", "다리", "손목/손", "발목/발", "기타"];
+const ONSET_OPTIONS = ["오늘 시작", "1주일 이내", "1개월 이내", "3개월 이상", "오래전부터"];
+
+async function loadIntakeForms() {
+  const { data, error } = await supabase.from("intake_forms").select("*");
+  if (error) {
+    console.error(error);
+    return [];
+  }
+  return data.map((r) => ({
+    id: r.id,
+    appointmentId: r.appointment_id,
+    patientPhone: r.patient_phone,
+    painAreas: r.pain_areas ? r.pain_areas.split(",") : [],
+    painLevel: r.pain_level,
+    onset: r.onset,
+    description: r.description,
+    updatedAt: r.updated_at,
+  }));
+}
+async function saveIntakeForm({ appointmentId, patientPhone, painAreas, painLevel, onset, description }) {
+  const { error } = await supabase.from("intake_forms").upsert(
+    {
+      appointment_id: appointmentId,
+      patient_phone: patientPhone,
+      pain_areas: painAreas.join(","),
+      pain_level: painLevel,
+      onset,
+      description,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "appointment_id" }
+  );
+  if (error) console.error(error);
+  return { error };
+}
+
+// ---- 운동 일지 ----
+function localDateStr(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function computeStreak(dateSet) {
+  let streak = 0;
+  const d = new Date();
+  while (dateSet.has(localDateStr(d))) {
+    streak++;
+    d.setDate(d.getDate() - 1);
+  }
+  return streak;
+}
+
+async function loadExerciseLogs(patientPhone) {
+  const { data, error } = await supabase.from("exercise_logs").select("log_date").eq("patient_phone", patientPhone);
+  if (error) {
+    console.error(error);
+    return [];
+  }
+  return data.map((r) => r.log_date);
+}
+async function toggleExerciseLog(patientPhone, dateStr, checked) {
+  if (checked) {
+    const { error } = await supabase.from("exercise_logs").insert([{ patient_phone: patientPhone, log_date: dateStr }]);
+    if (error && error.code !== "23505") console.error(error);
+  } else {
+    const { error } = await supabase.from("exercise_logs").delete().eq("patient_phone", patientPhone).eq("log_date", dateStr);
+    if (error) console.error(error);
+  }
+}
+async function loadAllExerciseLogs() {
+  const { data, error } = await supabase.from("exercise_logs").select("patient_phone, log_date");
+  if (error) {
+    console.error(error);
+    return [];
+  }
+  return data;
 }
 
 async function loadNotice() {
@@ -532,7 +657,7 @@ function LoginScreen({ onLogin, onBack }) {
   );
 }
 
-function AppointmentTicket({ appt, onCancel }) {
+function AppointmentTicket({ appt, onCancel, hasIntake, onOpenIntake }) {
   const Icon = CLINIC.icon;
   return (
     <div style={{ background: COLORS.white, position: "relative" }} className="rounded-2xl shadow-sm overflow-hidden mb-4">
@@ -574,6 +699,139 @@ function AppointmentTicket({ appt, onCancel }) {
               예약 취소
             </button>
           )}
+        </div>
+        {appt.status !== "cancelled" && (
+          <button
+            onClick={() => onOpenIntake(appt)}
+            className="w-full flex items-center justify-center gap-1.5 mt-3 rounded-lg py-2 text-xs font-semibold"
+            style={hasIntake ? { background: COLORS.paper, color: COLORS.pine } : { background: COLORS.amber, color: COLORS.white }}
+          >
+            {hasIntake ? "문진표 수정하기" : "문진표 작성하기"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function IntakeFormModal({ appt, initial, onSave, onClose }) {
+  const [painAreas, setPainAreas] = useState(initial?.painAreas || []);
+  const [painLevel, setPainLevel] = useState(initial?.painLevel || 5);
+  const [onset, setOnset] = useState(initial?.onset || "");
+  const [description, setDescription] = useState(initial?.description || "");
+  const [saving, setSaving] = useState(false);
+
+  const toggleArea = (area) => {
+    setPainAreas((prev) => (prev.includes(area) ? prev.filter((a) => a !== area) : [...prev, area]));
+  };
+
+  const save = async () => {
+    setSaving(true);
+    await onSave({ painAreas, painLevel, onset, description });
+    setSaving(false);
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-20 flex items-end sm:items-center justify-center" style={{ background: "rgba(32,40,31,0.45)" }}>
+      <div className="w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl overflow-hidden flex flex-col" style={{ background: COLORS.paper, maxHeight: "88vh" }}>
+        <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: `1px solid ${COLORS.paperDeep}` }}>
+          <div>
+            <div className="text-sm font-bold" style={{ color: COLORS.ink }}>
+              사전 문진표
+            </div>
+            <div className="text-[11px]" style={{ color: COLORS.inkSoft }}>
+              {appt.dateLabel} ({appt.weekday}) {appt.time} 진료 전 작성
+            </div>
+          </div>
+          <button onClick={onClose} aria-label="닫기">
+            <X size={20} color={COLORS.ink} />
+          </button>
+        </div>
+
+        <div className="px-5 py-4 overflow-y-auto space-y-5">
+          <div>
+            <div className="text-xs font-bold mb-2" style={{ color: COLORS.ink }}>
+              불편한 부위 (여러 개 선택 가능)
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {PAIN_AREAS.map((area) => (
+                <button
+                  key={area}
+                  onClick={() => toggleArea(area)}
+                  className="rounded-full px-3.5 py-1.5 text-xs font-semibold"
+                  style={
+                    painAreas.includes(area)
+                      ? { background: COLORS.pine, color: COLORS.white }
+                      : { background: COLORS.white, color: COLORS.inkSoft }
+                  }
+                >
+                  {area}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <div className="text-xs font-bold mb-2" style={{ color: COLORS.ink }}>
+              통증 정도 ({painLevel}/10)
+            </div>
+            <input
+              type="range"
+              min="1"
+              max="10"
+              value={painLevel}
+              onChange={(e) => setPainLevel(Number(e.target.value))}
+              className="w-full"
+              style={{ accentColor: COLORS.pine }}
+            />
+            <div className="flex justify-between text-[10px] mt-1" style={{ color: COLORS.slate }}>
+              <span>약함</span>
+              <span>심함</span>
+            </div>
+          </div>
+
+          <div>
+            <div className="text-xs font-bold mb-2" style={{ color: COLORS.ink }}>
+              통증이 시작된 시기
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {ONSET_OPTIONS.map((opt) => (
+                <button
+                  key={opt}
+                  onClick={() => setOnset(opt)}
+                  className="rounded-full px-3.5 py-1.5 text-xs font-semibold"
+                  style={onset === opt ? { background: COLORS.pine, color: COLORS.white } : { background: COLORS.white, color: COLORS.inkSoft }}
+                >
+                  {opt}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <div className="text-xs font-bold mb-2" style={{ color: COLORS.ink }}>
+              증상 설명 (선택)
+            </div>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value.slice(0, 500))}
+              placeholder="언제부터 어떻게 아픈지, 궁금한 점 등을 자유롭게 적어주세요."
+              rows={4}
+              className="w-full rounded-xl px-4 py-3 text-sm outline-none resize-none"
+              style={{ background: COLORS.white, color: COLORS.ink }}
+            />
+          </div>
+
+          <button
+            onClick={save}
+            disabled={saving}
+            className="w-full rounded-xl py-3.5 font-bold flex items-center justify-center gap-2"
+            style={{ background: COLORS.pineDeep, color: COLORS.white }}
+          >
+            {saving && <Loader2 size={16} className="animate-spin" />}
+            저장하기
+          </button>
         </div>
       </div>
     </div>
@@ -967,6 +1225,68 @@ function CommunityBoard({ posts, myPhone, onPost, onDelete, onRefresh, refreshin
   );
 }
 
+function ExerciseLog({ dates, onToggleToday }) {
+  const dateSet = new Set(dates);
+  const today = new Date();
+  const todayStr = localDateStr(today);
+  const didToday = dateSet.has(todayStr);
+  const streak = computeStreak(dateSet);
+
+  // 최근 28일 (4주) 달력형 그리드, 오래된 날짜가 위쪽/왼쪽
+  const days = [];
+  for (let i = 27; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    days.push({ str: localDateStr(d), label: d.getDate(), checked: dateSet.has(localDateStr(d)), isToday: localDateStr(d) === todayStr });
+  }
+
+  return (
+    <div className="h-full overflow-y-auto px-5 pb-24">
+      <div className="rounded-2xl px-5 py-6 mb-5 text-center" style={{ background: COLORS.pineDeep }}>
+        <div className="text-xs font-semibold" style={{ color: "rgba(255,255,255,0.7)" }}>
+          연속 운동 실천
+        </div>
+        <div className="text-4xl font-extrabold mt-1" style={{ color: COLORS.white }}>
+          {streak}일째
+        </div>
+        <button
+          onClick={() => onToggleToday(!didToday)}
+          className="w-full mt-4 rounded-xl py-3.5 font-bold flex items-center justify-center gap-2"
+          style={didToday ? { background: COLORS.amber, color: COLORS.white } : { background: COLORS.white, color: COLORS.pineDeep }}
+        >
+          <Dumbbell size={18} />
+          {didToday ? "오늘 운동 완료!" : "오늘 운동 체크하기"}
+        </button>
+      </div>
+
+      <div className="text-xs font-bold mb-2" style={{ color: COLORS.inkSoft }}>
+        최근 4주
+      </div>
+      <div className="grid grid-cols-7 gap-1.5">
+        {days.map((d) => (
+          <div
+            key={d.str}
+            className="aspect-square rounded-lg flex items-center justify-center text-[10px] font-bold"
+            style={
+              d.checked
+                ? { background: COLORS.pine, color: COLORS.white }
+                : { background: COLORS.white, color: COLORS.inkSoft, border: d.isToday ? `1.5px solid ${COLORS.amber}` : "none" }
+            }
+          >
+            {d.label}
+          </div>
+        ))}
+      </div>
+
+      <p className="text-xs mt-5 text-center" style={{ color: COLORS.slate }}>
+        매일 스트레칭·재활 운동을 실천하고 체크해보세요.
+        <br />
+        꾸준한 운동이 회복에 큰 도움이 돼요.
+      </p>
+    </div>
+  );
+}
+
 function PatientApp({ onExit }) {
   const [tab, setTab] = useState("book");
   const [allAppointments, setAllAppointments] = useState([]);
@@ -974,6 +1294,9 @@ function PatientApp({ onExit }) {
   const [posts, setPosts] = useState([]);
   const [postsRefreshing, setPostsRefreshing] = useState(false);
   const [booking, setBooking] = useState(false);
+  const [intakeForms, setIntakeForms] = useState([]);
+  const [intakeTarget, setIntakeTarget] = useState(null); // appt object | null
+  const [exerciseDates, setExerciseDates] = useState([]);
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState(null);
   const [notifPermission, setNotifPermission] = useState(typeof Notification !== "undefined" ? Notification.permission : "unsupported");
@@ -1078,6 +1401,8 @@ function PatientApp({ onExit }) {
       if (p) {
         await refreshAll();
         setPosts(await loadPosts());
+        setIntakeForms(await loadIntakeForms());
+        setExerciseDates(await loadExerciseLogs(p.phone));
         setProfile(p);
       }
       setLoading(false);
@@ -1098,6 +1423,14 @@ function PatientApp({ onExit }) {
     profileRef.current = p;
     await refreshAll();
     setPosts(await loadPosts());
+    setIntakeForms(await loadIntakeForms());
+    setExerciseDates(await loadExerciseLogs(p.phone));
+  };
+
+  const handleToggleExerciseToday = async (checked) => {
+    const todayStr = localDateStr(new Date());
+    setExerciseDates((prev) => (checked ? [...prev, todayStr] : prev.filter((d) => d !== todayStr)));
+    await toggleExerciseLog(profile.phone, todayStr, checked);
   };
 
   const handleLogout = () => {
@@ -1215,13 +1548,23 @@ function PatientApp({ onExit }) {
                 아직 예약된 진료가 없어요.
               </div>
             ) : (
-              myAppointments.map((a) => <AppointmentTicket key={a.id} appt={a} onCancel={handleCancel} />)
+              myAppointments.map((a) => (
+                <AppointmentTicket
+                  key={a.id}
+                  appt={a}
+                  onCancel={handleCancel}
+                  hasIntake={intakeForms.some((f) => f.appointmentId === a.id)}
+                  onOpenIntake={setIntakeTarget}
+                />
+              ))
             )}
           </div>
         ) : tab === "messages" ? (
           <MessagesView messages={myMessages} onSend={handleSend} />
-        ) : (
+        ) : tab === "community" ? (
           <CommunityBoard posts={posts} myPhone={profile.phone} onPost={handlePost} onDelete={handleDeletePost} onRefresh={refreshPosts} refreshing={postsRefreshing} />
+        ) : (
+          <ExerciseLog dates={exerciseDates} onToggleToday={handleToggleExerciseToday} />
         )}
       </div>
 
@@ -1230,6 +1573,7 @@ function PatientApp({ onExit }) {
           { id: "book", label: "예약", icon: Calendar },
           { id: "messages", label: "메시지", icon: MessageCircle },
           { id: "community", label: "커뮤니티", icon: Users2 },
+          { id: "exercise", label: "운동", icon: Dumbbell },
         ].map((t) => {
           const Icon = t.icon;
           const active = tab === t.id;
@@ -1251,6 +1595,18 @@ function PatientApp({ onExit }) {
 
       {booking && (
         <BookingFlow allAppointments={allAppointments} myAppointments={myAppointments} onCreated={handleCreated} onClose={() => setBooking(false)} />
+      )}
+
+      {intakeTarget && (
+        <IntakeFormModal
+          appt={intakeTarget}
+          initial={intakeForms.find((f) => f.appointmentId === intakeTarget.id)}
+          onSave={async (data) => {
+            await saveIntakeForm({ appointmentId: intakeTarget.id, patientPhone: profile.phone, ...data });
+            setIntakeForms(await loadIntakeForms());
+          }}
+          onClose={() => setIntakeTarget(null)}
+        />
       )}
     </div>
   );
@@ -1302,7 +1658,73 @@ function AdminLogin({ onSuccess, onBack }) {
   );
 }
 
-function AdminAppointments({ appointments, onStatusChange, onMessage, onRefresh, refreshing }) {
+function IntakeViewModal({ appt, intake, onClose }) {
+  return (
+    <div className="fixed inset-0 z-20 flex items-end sm:items-center justify-center" style={{ background: "rgba(32,40,31,0.45)" }}>
+      <div className="w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl overflow-hidden flex flex-col" style={{ background: COLORS.paper, maxHeight: "85vh" }}>
+        <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: `1px solid ${COLORS.paperDeep}` }}>
+          <div>
+            <div className="text-sm font-bold" style={{ color: COLORS.ink }}>
+              {appt.patientName}님 사전 문진표
+            </div>
+            <div className="text-[11px]" style={{ color: COLORS.inkSoft }}>
+              {appt.dateLabel} ({appt.weekday}) {appt.time}
+            </div>
+          </div>
+          <button onClick={onClose} aria-label="닫기">
+            <X size={20} color={COLORS.ink} />
+          </button>
+        </div>
+        <div className="px-5 py-4 overflow-y-auto space-y-4">
+          <div>
+            <div className="text-[11px] font-bold mb-1.5" style={{ color: COLORS.slate }}>
+              불편한 부위
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {intake.painAreas.length === 0 ? (
+                <span className="text-sm" style={{ color: COLORS.inkSoft }}>
+                  선택 없음
+                </span>
+              ) : (
+                intake.painAreas.map((area) => (
+                  <span key={area} className="rounded-full px-3 py-1 text-xs font-semibold" style={{ background: COLORS.white, color: COLORS.pine }}>
+                    {area}
+                  </span>
+                ))
+              )}
+            </div>
+          </div>
+          <div>
+            <div className="text-[11px] font-bold mb-1.5" style={{ color: COLORS.slate }}>
+              통증 정도
+            </div>
+            <div className="text-sm font-bold" style={{ color: COLORS.ink }}>
+              {intake.painLevel ? `${intake.painLevel} / 10` : "미입력"}
+            </div>
+          </div>
+          <div>
+            <div className="text-[11px] font-bold mb-1.5" style={{ color: COLORS.slate }}>
+              통증 시작 시기
+            </div>
+            <div className="text-sm" style={{ color: COLORS.ink }}>
+              {intake.onset || "미입력"}
+            </div>
+          </div>
+          <div>
+            <div className="text-[11px] font-bold mb-1.5" style={{ color: COLORS.slate }}>
+              증상 설명
+            </div>
+            <div className="text-sm whitespace-pre-wrap rounded-xl p-3" style={{ background: COLORS.white, color: COLORS.ink }}>
+              {intake.description || "작성한 내용이 없어요."}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AdminAppointments({ appointments, intakeForms, onViewIntake, onStatusChange, onMessage, onRefresh, refreshing }) {
   const grouped = {};
   appointments
     .filter((a) => a.status !== "cancelled")
@@ -1356,7 +1778,7 @@ function AdminAppointments({ appointments, onStatusChange, onMessage, onRefresh,
                           {a.patientPhone}
                         </div>
                       </div>
-                      <span className="text-[11px] font-bold px-2 py-0.5 rounded-full" style={{ color: STATUS_COLOR[a.status], background: COLORS.paper }}>
+                      <span className="text-sm font-bold px-3 py-1 rounded-full whitespace-nowrap" style={{ color: STATUS_COLOR[a.status], background: COLORS.paper }}>
                         {STATUS_LABEL[a.status]}
                       </span>
                     </div>
@@ -1381,6 +1803,16 @@ function AdminAppointments({ appointments, onStatusChange, onMessage, onRefresh,
                         취소 처리
                       </button>
                     </div>
+                    {intakeForms.some((f) => f.appointmentId === a.id) && (
+                      <button
+                        onClick={() => onViewIntake(a)}
+                        className="w-full flex items-center justify-center gap-1.5 mt-2 rounded-lg py-1.5 text-xs font-semibold"
+                        style={{ background: COLORS.paper, color: COLORS.amber }}
+                      >
+                        <FileText size={13} />
+                        문진표 보기
+                      </button>
+                    )}
                   </div>
                 ))}
             </div>
@@ -1834,7 +2266,7 @@ function AdminCommunity({ posts, onDelete, onRefresh, refreshing }) {
   );
 }
 
-function AdminCustomers({ appointments, messages, onMessage, onDeletePatient, onRefresh, refreshing }) {
+function AdminCustomers({ appointments, messages, exerciseLogs, onMessage, onDeletePatient, onRefresh, refreshing }) {
   const [query, setQuery] = useState("");
 
   const customers = {};
@@ -1926,6 +2358,17 @@ function AdminCustomers({ appointments, messages, onMessage, onDeletePatient, on
                   환자 삭제
                 </button>
               </div>
+              {(() => {
+                const dateSet = new Set(exerciseLogs.filter((e) => e.patient_phone === c.phone).map((e) => e.log_date));
+                if (dateSet.size === 0) return null;
+                const streak = computeStreak(dateSet);
+                return (
+                  <div className="flex items-center gap-1.5 mt-2 text-[11px] font-semibold" style={{ color: COLORS.amber }}>
+                    <Dumbbell size={12} />
+                    운동 {dateSet.size}일 기록 {streak > 0 && `· 연속 ${streak}일`}
+                  </div>
+                );
+              })()}
             </div>
           ))}
         </div>
@@ -1951,8 +2394,12 @@ function AdminApp({ onExit }) {
   const [posts, setPosts] = useState([]);
   const [postsRefreshing, setPostsRefreshing] = useState(false);
   const [closedMap, setClosedMap] = useState({});
+  const [intakeForms, setIntakeForms] = useState([]);
+  const [intakeViewTarget, setIntakeViewTarget] = useState(null); // appointment object | null
+  const [exerciseLogs, setExerciseLogs] = useState([]);
 
   const seenApptIds = useRef(null);
+  const seenApptStatus = useRef(null);
   const seenMsgIds = useRef(null);
   const pollRef = useRef(null);
 
@@ -1978,23 +2425,47 @@ function AdminApp({ onExit }) {
     playBeep();
     setToast({ title, body });
     setTimeout(() => setToast(null), 4500);
-    try {
-      if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-        new Notification(title, { body });
-      }
-    } catch {
-      // ignore
-    }
+    // 탭이 열려있을 땐 소리+배너로 알려주고, 실제 시스템 알림은
+    // 서버 푸시(서비스워커)가 담당한다 (중복 알림 방지)
   };
 
+  const [pushEnabled, setPushEnabled] = useState(false);
+  const [pushError, setPushError] = useState("");
+
   const requestNotifPermission = async () => {
+    setPushError("");
     try {
       const perm = await Notification.requestPermission();
       setNotifPermission(perm);
+      if (perm === "denied") {
+        window.alert("알림이 차단되어 있어요. 주소창 왼쪽의 자물쇠(사이트 정보) 아이콘을 눌러 '알림' 권한을 '허용'으로 바꾼 뒤 새로고침해주세요.");
+        return;
+      }
+      if (perm === "granted") {
+        const { error } = await adminSubscribeToPush();
+        if (error) setPushError(error);
+        else setPushEnabled(true);
+      }
     } catch {
       setNotifPermission("unsupported");
     }
   };
+
+  const handleDisablePush = async () => {
+    await adminUnsubscribeFromPush();
+    setPushEnabled(false);
+  };
+
+  // 예전에 이미 권한을 허용해둔 기기라면 버튼 없이도 자동으로 구독을 등록한다.
+  useEffect(() => {
+    if (!authed) return;
+    if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+      adminSubscribeToPush().then(({ error }) => {
+        if (error) setPushError(error);
+        else setPushEnabled(true);
+      });
+    }
+  }, [authed]);
 
   const refresh = async (silent) => {
     if (!silent) setRefreshing(true);
@@ -2008,6 +2479,19 @@ function AdminApp({ onExit }) {
         notify("새 예약", freshAppts.length === 1 ? `${first.patientName}님 · ${first.dateLabel} ${first.time}` : `${freshAppts.length}건의 새 예약이 있어요`);
       }
     }
+    if (seenApptStatus.current) {
+      const newlyCancelled = a.filter(
+        (x) => seenApptStatus.current[x.id] && seenApptStatus.current[x.id] !== "cancelled" && x.status === "cancelled"
+      );
+      if (newlyCancelled.length > 0) {
+        setNewApptCount((c) => c + newlyCancelled.length);
+        const first = newlyCancelled[0];
+        notify(
+          "예약 취소",
+          newlyCancelled.length === 1 ? `${first.patientName}님 · ${first.dateLabel} ${first.time}` : `${newlyCancelled.length}건의 예약이 취소됐어요`
+        );
+      }
+    }
     if (seenMsgIds.current) {
       const freshMsgs = m.filter((x) => !seenMsgIds.current.has(x.id) && x.from === "patient");
       if (freshMsgs.length > 0) {
@@ -2018,10 +2502,13 @@ function AdminApp({ onExit }) {
     }
 
     seenApptIds.current = new Set(a.map((x) => x.id));
+    seenApptStatus.current = Object.fromEntries(a.map((x) => [x.id, x.status]));
     seenMsgIds.current = new Set(m.map((x) => x.id));
     setAppointments(a);
     setMessages(m);
     setClosedMap(await loadConversationStatuses());
+    setIntakeForms(await loadIntakeForms());
+    setExerciseLogs(await loadAllExerciseLogs());
     if (!silent) setRefreshing(false);
   };
 
@@ -2066,6 +2553,7 @@ function AdminApp({ onExit }) {
       window.alert("이 시간은 이미 다른 예약으로 채워져서 복구할 수 없어요. 환자에게 다른 시간으로 다시 예약하도록 안내해주세요.");
       return;
     }
+    if (seenApptStatus.current) seenApptStatus.current[id] = status;
     setAppointments((prev) => prev.map((a) => (a.id === id ? { ...a, status } : a)));
   };
 
@@ -2136,14 +2624,31 @@ function AdminApp({ onExit }) {
         </div>
       </div>
 
-      {notifPermission !== "granted" && notifPermission !== "unsupported" && (
+      {!pushEnabled && notifPermission !== "unsupported" && (
         <div className="mx-5 mb-3 rounded-xl px-4 py-3 flex items-center justify-between" style={{ background: COLORS.white }}>
           <span className="text-xs" style={{ color: COLORS.inkSoft }}>
-            새 예약·메시지를 브라우저 알림으로 받을까요?
+            앱을 꺼두어도 새 예약·취소·메시지를 알림으로 받아보시겠어요?
           </span>
-          <button onClick={requestNotifPermission} className="text-xs font-bold" style={{ color: COLORS.pine }}>
+          <button onClick={requestNotifPermission} className="text-xs font-bold whitespace-nowrap" style={{ color: COLORS.pine }}>
             알림 켜기
           </button>
+        </div>
+      )}
+      {pushEnabled && (
+        <div className="mx-5 mb-3 rounded-xl px-4 py-2.5 flex items-center justify-between" style={{ background: COLORS.white }}>
+          <span className="text-xs font-semibold" style={{ color: COLORS.pine }}>
+            ✓ 알림이 켜졌어요
+          </span>
+          <button onClick={handleDisablePush} className="text-xs font-medium" style={{ color: COLORS.slate }}>
+            끄기
+          </button>
+        </div>
+      )}
+      {pushError && (
+        <div className="mx-5 mb-3 rounded-xl px-4 py-2.5" style={{ background: COLORS.white }}>
+          <span className="text-xs" style={{ color: COLORS.danger }}>
+            알림 등록에 실패했어요: {pushError}
+          </span>
         </div>
       )}
 
@@ -2151,6 +2656,8 @@ function AdminApp({ onExit }) {
         {tab === "appointments" ? (
           <AdminAppointments
             appointments={appointments}
+            intakeForms={intakeForms}
+            onViewIntake={setIntakeViewTarget}
             onStatusChange={handleStatusChange}
             onMessage={(phone, name) => {
               setMessageTarget({ phone, name });
@@ -2180,6 +2687,7 @@ function AdminApp({ onExit }) {
           <AdminCustomers
             appointments={appointments}
             messages={messages}
+            exerciseLogs={exerciseLogs}
             onMessage={(phone, name) => {
               setMessageTarget({ phone, name });
               setTab("messages");
@@ -2228,6 +2736,14 @@ function AdminApp({ onExit }) {
       </div>
 
       {noticeEditorOpen && <NoticeEditor initialValue={notice} onSave={handleSaveNotice} onClose={() => setNoticeEditorOpen(false)} />}
+
+      {intakeViewTarget && (
+        <IntakeViewModal
+          appt={intakeViewTarget}
+          intake={intakeForms.find((f) => f.appointmentId === intakeViewTarget.id)}
+          onClose={() => setIntakeViewTarget(null)}
+        />
+      )}
     </div>
   );
 }
