@@ -1437,6 +1437,8 @@ function PatientApp({ onExit }) {
         if (freshClinicMsgs.length > 0) playBeep();
       }
       seenMsgIds.current = new Set(myMsgs.map((x) => x.id));
+      setMyStamps(await loadStampsForPatient(p.phone));
+      setExerciseDates(await loadExerciseLogs(p.phone));
     }
     setAllMessages(m);
   };
