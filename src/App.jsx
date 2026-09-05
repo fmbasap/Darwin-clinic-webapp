@@ -21,6 +21,7 @@ import {
   Users2,
   FileText,
   Dumbbell,
+  Star,
   Trash2,
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
@@ -282,6 +283,7 @@ async function deletePatientData(patientPhone) {
   await supabase.from("community_posts").delete().eq("patient_phone", patientPhone);
   await supabase.from("intake_forms").delete().eq("patient_phone", patientPhone);
   await supabase.from("exercise_logs").delete().eq("patient_phone", patientPhone);
+  await supabase.from("exercise_stamps").delete().eq("patient_phone", patientPhone);
 }
 
 async function loadConversationStatuses() {
@@ -379,6 +381,33 @@ async function loadAllExerciseLogs() {
     return [];
   }
   return data;
+}
+
+// ---- 관리자 도장(칭찬 스탬프) ----
+async function loadStampsForPatient(patientPhone) {
+  const { data, error } = await supabase.from("exercise_stamps").select("log_date").eq("patient_phone", patientPhone);
+  if (error) {
+    console.error(error);
+    return [];
+  }
+  return data.map((r) => r.log_date);
+}
+async function loadAllStamps() {
+  const { data, error } = await supabase.from("exercise_stamps").select("patient_phone, log_date");
+  if (error) {
+    console.error(error);
+    return [];
+  }
+  return data;
+}
+async function toggleStamp(patientPhone, dateStr, stamped) {
+  if (stamped) {
+    const { error } = await supabase.from("exercise_stamps").insert([{ patient_phone: patientPhone, log_date: dateStr }]);
+    if (error && error.code !== "23505") console.error(error);
+  } else {
+    const { error } = await supabase.from("exercise_stamps").delete().eq("patient_phone", patientPhone).eq("log_date", dateStr);
+    if (error) console.error(error);
+  }
 }
 
 async function loadNotice() {
@@ -1225,12 +1254,14 @@ function CommunityBoard({ posts, myPhone, onPost, onDelete, onRefresh, refreshin
   );
 }
 
-function ExerciseLog({ dates, onToggleToday }) {
+function ExerciseLog({ dates, stampedDates, onToggleToday }) {
   const dateSet = new Set(dates);
+  const stampSet = new Set(stampedDates);
   const today = new Date();
   const todayStr = localDateStr(today);
   const didToday = dateSet.has(todayStr);
   const streak = computeStreak(dateSet);
+  const stampCount = stampSet.size;
 
   // 최근 28일 (4주) 달력형 그리드, 오래된 날짜가 위쪽/왼쪽
   const days = [];
@@ -1249,6 +1280,12 @@ function ExerciseLog({ dates, onToggleToday }) {
         <div className="text-4xl font-extrabold mt-1" style={{ color: COLORS.white }}>
           {streak}일째
         </div>
+        {stampCount > 0 && (
+          <div className="flex items-center justify-center gap-1 mt-1.5 text-xs font-semibold" style={{ color: COLORS.amber }}>
+            <Star size={13} fill={COLORS.amber} />
+            원장님이 {stampCount}번 칭찬해주셨어요
+          </div>
+        )}
         <button
           onClick={() => onToggleToday(!didToday)}
           className="w-full mt-4 rounded-xl py-3.5 font-bold flex items-center justify-center gap-2"
@@ -1266,7 +1303,7 @@ function ExerciseLog({ dates, onToggleToday }) {
         {days.map((d) => (
           <div
             key={d.str}
-            className="aspect-square rounded-lg flex items-center justify-center text-[10px] font-bold"
+            className="relative aspect-square rounded-lg flex items-center justify-center text-[10px] font-bold"
             style={
               d.checked
                 ? { background: COLORS.pine, color: COLORS.white }
@@ -1274,6 +1311,14 @@ function ExerciseLog({ dates, onToggleToday }) {
             }
           >
             {d.label}
+            {stampSet.has(d.str) && (
+              <span
+                className="absolute -top-1.5 -right-1.5 rounded-full flex items-center justify-center"
+                style={{ width: 16, height: 16, background: COLORS.danger }}
+              >
+                <Star size={10} color={COLORS.white} fill={COLORS.white} />
+              </span>
+            )}
           </div>
         ))}
       </div>
@@ -1297,6 +1342,7 @@ function PatientApp({ onExit }) {
   const [intakeForms, setIntakeForms] = useState([]);
   const [intakeTarget, setIntakeTarget] = useState(null); // appt object | null
   const [exerciseDates, setExerciseDates] = useState([]);
+  const [myStamps, setMyStamps] = useState([]);
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState(null);
   const [notifPermission, setNotifPermission] = useState(typeof Notification !== "undefined" ? Notification.permission : "unsupported");
@@ -1403,6 +1449,7 @@ function PatientApp({ onExit }) {
         setPosts(await loadPosts());
         setIntakeForms(await loadIntakeForms());
         setExerciseDates(await loadExerciseLogs(p.phone));
+        setMyStamps(await loadStampsForPatient(p.phone));
         setProfile(p);
       }
       setLoading(false);
@@ -1425,6 +1472,7 @@ function PatientApp({ onExit }) {
     setPosts(await loadPosts());
     setIntakeForms(await loadIntakeForms());
     setExerciseDates(await loadExerciseLogs(p.phone));
+    setMyStamps(await loadStampsForPatient(p.phone));
   };
 
   const handleToggleExerciseToday = async (checked) => {
@@ -1564,7 +1612,7 @@ function PatientApp({ onExit }) {
         ) : tab === "community" ? (
           <CommunityBoard posts={posts} myPhone={profile.phone} onPost={handlePost} onDelete={handleDeletePost} onRefresh={refreshPosts} refreshing={postsRefreshing} />
         ) : (
-          <ExerciseLog dates={exerciseDates} onToggleToday={handleToggleExerciseToday} />
+          <ExerciseLog dates={exerciseDates} stampedDates={myStamps} onToggleToday={handleToggleExerciseToday} />
         )}
       </div>
 
@@ -1658,8 +1706,9 @@ function AdminLogin({ onSuccess, onBack }) {
   );
 }
 
-function AdminExerciseViewModal({ name, dates, onClose }) {
+function AdminExerciseViewModal({ name, phone, dates, stampedDates, onToggleStamp, onClose }) {
   const dateSet = new Set(dates);
+  const [stampSet, setStampSet] = useState(new Set(stampedDates));
   const today = new Date();
   const todayStr = localDateStr(today);
   const streak = computeStreak(dateSet);
@@ -1670,6 +1719,17 @@ function AdminExerciseViewModal({ name, dates, onClose }) {
     d.setDate(d.getDate() - i);
     days.push({ str: localDateStr(d), label: d.getDate(), checked: dateSet.has(localDateStr(d)), isToday: localDateStr(d) === todayStr });
   }
+
+  const handleStampClick = (dayStr) => {
+    const willStamp = !stampSet.has(dayStr);
+    setStampSet((prev) => {
+      const next = new Set(prev);
+      if (willStamp) next.add(dayStr);
+      else next.delete(dayStr);
+      return next;
+    });
+    onToggleStamp(phone, dayStr, willStamp);
+  };
 
   return (
     <div className="fixed inset-0 z-20 flex items-end sm:items-center justify-center" style={{ background: "rgba(32,40,31,0.45)" }}>
@@ -1688,11 +1748,15 @@ function AdminExerciseViewModal({ name, dates, onClose }) {
           </button>
         </div>
         <div className="px-5 py-4 overflow-y-auto">
+          <p className="text-[11px] mb-3" style={{ color: COLORS.slate }}>
+            날짜를 눌러서 참 잘했어요 도장을 찍어줄 수 있어요.
+          </p>
           <div className="grid grid-cols-7 gap-1.5">
             {days.map((d) => (
-              <div
+              <button
                 key={d.str}
-                className="aspect-square rounded-lg flex items-center justify-center text-[10px] font-bold"
+                onClick={() => handleStampClick(d.str)}
+                className="relative aspect-square rounded-lg flex items-center justify-center text-[10px] font-bold"
                 style={
                   d.checked
                     ? { background: COLORS.pine, color: COLORS.white }
@@ -1700,7 +1764,15 @@ function AdminExerciseViewModal({ name, dates, onClose }) {
                 }
               >
                 {d.label}
-              </div>
+                {stampSet.has(d.str) && (
+                  <span
+                    className="absolute -top-1.5 -right-1.5 rounded-full flex items-center justify-center"
+                    style={{ width: 16, height: 16, background: COLORS.danger }}
+                  >
+                    <Star size={10} color={COLORS.white} fill={COLORS.white} />
+                  </span>
+                )}
+              </button>
             ))}
           </div>
         </div>
@@ -2414,7 +2486,7 @@ function AdminCustomers({ appointments, messages, exerciseLogs, onMessage, onDel
                 const streak = computeStreak(dateSet);
                 return (
                   <button
-                    onClick={() => onViewExercise(c.name, [...dateSet])}
+                    onClick={() => onViewExercise(c.name, c.phone, [...dateSet])}
                     className="flex items-center gap-1.5 mt-2 text-[11px] font-semibold"
                     style={{ color: dateSet.size > 0 ? COLORS.amber : COLORS.slate }}
                   >
@@ -2451,7 +2523,8 @@ function AdminApp({ onExit }) {
   const [intakeForms, setIntakeForms] = useState([]);
   const [intakeViewTarget, setIntakeViewTarget] = useState(null); // appointment object | null
   const [exerciseLogs, setExerciseLogs] = useState([]);
-  const [exerciseViewTarget, setExerciseViewTarget] = useState(null); // { name, dates } | null
+  const [exerciseViewTarget, setExerciseViewTarget] = useState(null); // { name, phone, dates } | null
+  const [stamps, setStamps] = useState([]);
 
   const seenApptIds = useRef(null);
   const seenApptStatus = useRef(null);
@@ -2564,6 +2637,7 @@ function AdminApp({ onExit }) {
     setClosedMap(await loadConversationStatuses());
     setIntakeForms(await loadIntakeForms());
     setExerciseLogs(await loadAllExerciseLogs());
+    setStamps(await loadAllStamps());
     if (!silent) setRefreshing(false);
   };
 
@@ -2749,7 +2823,7 @@ function AdminApp({ onExit }) {
               setNewMsgCount(0);
             }}
             onDeletePatient={handleDeletePatient}
-            onViewExercise={(name, dates) => setExerciseViewTarget({ name, dates })}
+            onViewExercise={(name, phone, dates) => setExerciseViewTarget({ name, phone, dates })}
             onRefresh={() => refresh(false)}
             refreshing={refreshing}
           />
@@ -2802,7 +2876,19 @@ function AdminApp({ onExit }) {
       )}
 
       {exerciseViewTarget && (
-        <AdminExerciseViewModal name={exerciseViewTarget.name} dates={exerciseViewTarget.dates} onClose={() => setExerciseViewTarget(null)} />
+        <AdminExerciseViewModal
+          name={exerciseViewTarget.name}
+          phone={exerciseViewTarget.phone}
+          dates={exerciseViewTarget.dates}
+          stampedDates={stamps.filter((s) => s.patient_phone === exerciseViewTarget.phone).map((s) => s.log_date)}
+          onToggleStamp={async (phone, dateStr, stamped) => {
+            await toggleStamp(phone, dateStr, stamped);
+            setStamps((prev) =>
+              stamped ? [...prev, { patient_phone: phone, log_date: dateStr }] : prev.filter((s) => !(s.patient_phone === phone && s.log_date === dateStr))
+            );
+          }}
+          onClose={() => setExerciseViewTarget(null)}
+        />
       )}
     </div>
   );
