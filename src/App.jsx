@@ -2411,16 +2411,15 @@ function AdminCustomers({ appointments, messages, exerciseLogs, onMessage, onDel
               </div>
               {(() => {
                 const dateSet = new Set(exerciseLogs.filter((e) => e.patient_phone === c.phone).map((e) => e.log_date));
-                if (dateSet.size === 0) return null;
                 const streak = computeStreak(dateSet);
                 return (
                   <button
                     onClick={() => onViewExercise(c.name, [...dateSet])}
                     className="flex items-center gap-1.5 mt-2 text-[11px] font-semibold"
-                    style={{ color: COLORS.amber }}
+                    style={{ color: dateSet.size > 0 ? COLORS.amber : COLORS.slate }}
                   >
                     <Dumbbell size={12} />
-                    운동 {dateSet.size}일 기록 {streak > 0 && `· 연속 ${streak}일`}
+                    {dateSet.size > 0 ? `운동 ${dateSet.size}일 기록 ${streak > 0 ? `· 연속 ${streak}일` : ""}` : "운동 기록 없음"}
                   </button>
                 );
               })()}
