@@ -22,6 +22,7 @@ import {
   FileText,
   Dumbbell,
   Star,
+  LineChart,
   Trash2,
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
@@ -262,8 +263,6 @@ async function insertMessage(msg) {
     },
   ]);
   if (error) console.error(error);
-  // 새 메시지가 오가면 그 대화는 자동으로 다시 열린 상태로 되돌린다.
-  await setConversationClosed(msg.patientPhone, false);
 }
 async function deleteMessage(id) {
   const { error } = await supabase.from("messages").delete().eq("id", id);
@@ -286,6 +285,7 @@ async function deletePatientData(patientPhone) {
   await supabase.from("exercise_stamps").delete().eq("patient_phone", patientPhone);
 }
 
+// ---- 진료 세션 (대기실 → 진료중 → 종료) ----
 async function loadConversationStatuses() {
   const { data, error } = await supabase.from("conversation_status").select("*");
   if (error) {
@@ -294,15 +294,23 @@ async function loadConversationStatuses() {
   }
   const map = {};
   data.forEach((r) => {
-    map[r.patient_phone] = r.closed;
+    map[r.patient_phone] = { closed: r.closed, waiting: r.waiting };
   });
   return map;
 }
-async function setConversationClosed(patientPhone, closed) {
+async function setConversationSession(patientPhone, fields) {
   const { error } = await supabase
     .from("conversation_status")
-    .upsert({ patient_phone: patientPhone, closed, updated_at: new Date().toISOString() }, { onConflict: "patient_phone" });
+    .upsert({ patient_phone: patientPhone, ...fields, updated_at: new Date().toISOString() }, { onConflict: "patient_phone" });
   if (error) console.error(error);
+}
+async function loadMySessionStatus(patientPhone) {
+  const { data, error } = await supabase.from("conversation_status").select("*").eq("patient_phone", patientPhone).maybeSingle();
+  if (error) {
+    console.error(error);
+    return null;
+  }
+  return data ? { closed: data.closed, waiting: data.waiting } : null;
 }
 
 // ---- 사전 문진표 ----
@@ -355,6 +363,64 @@ function computeStreak(dateSet) {
     d.setDate(d.getDate() - 1);
   }
   return streak;
+}
+
+// ---- 통증 추이 ----
+function apptSortKey(appt) {
+  const [month, day] = (appt.dateLabel || "1.1").split(".").map(Number);
+  const [hh, mm] = (appt.time || "00:00").split(":").map(Number);
+  return month * 1000000 + day * 10000 + (hh || 0) * 100 + (mm || 0);
+}
+
+function buildPainHistory(intakeForms, appointments, patientPhone) {
+  const apptById = {};
+  appointments.forEach((a) => {
+    apptById[a.id] = a;
+  });
+  return intakeForms
+    .filter((f) => f.patientPhone === patientPhone && f.painLevel)
+    .map((f) => {
+      const appt = apptById[f.appointmentId];
+      return appt ? { sortKey: apptSortKey(appt), label: appt.dateLabel, painLevel: f.painLevel } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.sortKey - b.sortKey);
+}
+
+function PainTrendChart({ points }) {
+  if (points.length === 0) return null;
+  const width = Math.max(280, points.length * 56);
+  const height = 140;
+  const padTop = 16;
+  const padBottom = 28;
+  const chartH = height - padTop - padBottom;
+  const stepX = points.length > 1 ? (width - 40) / (points.length - 1) : 0;
+  const xFor = (i) => 24 + i * stepX;
+  const yFor = (v) => padTop + chartH - ((v - 1) / 9) * chartH;
+
+  const linePoints = points.map((p, i) => `${xFor(i)},${yFor(p.painLevel)}`).join(" ");
+
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <svg width={width} height={height}>
+        {[1, 5, 10].map((v) => (
+          <line key={v} x1="20" y1={yFor(v)} x2={width - 10} y2={yFor(v)} stroke={COLORS.paperDeep} strokeWidth="1" />
+        ))}
+        <polyline points={linePoints} fill="none" stroke={COLORS.pine} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
+        {points.map((p, i) => (
+          <g key={i}>
+            <circle cx={xFor(i)} cy={yFor(p.painLevel)} r="5" fill={COLORS.pine} />
+            <text x={xFor(i)} y={yFor(p.painLevel) - 10} fontSize="11" fontWeight="bold" fill={COLORS.ink} textAnchor="middle">
+              {p.painLevel}
+            </text>
+            <text x={xFor(i)} y={height - 8} fontSize="10" fill={COLORS.slate} textAnchor="middle">
+              {p.label}
+            </text>
+          </g>
+        ))}
+      </svg>
+    </div>
+  );
 }
 
 async function loadExerciseLogs(patientPhone) {
@@ -1069,6 +1135,70 @@ function BookingFlow({ allAppointments, myAppointments, onCreated, onClose }) {
   );
 }
 
+function PatientConsultation({ messages, sessionState, onStart, onSend }) {
+  const effective = sessionState || (messages.length > 0 ? { closed: false, waiting: false } : null);
+
+  if (!effective) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center px-8 text-center">
+        <MessageCircle size={32} color={COLORS.slate} />
+        <p className="text-sm font-bold mt-3" style={{ color: COLORS.ink }}>
+          아직 시작한 상담이 없어요
+        </p>
+        <p className="text-xs mt-1" style={{ color: COLORS.inkSoft }}>
+          궁금한 점이나 불편한 점을 병원에 남겨보세요.
+        </p>
+        <button onClick={onStart} className="mt-5 rounded-xl px-6 py-3 font-bold text-sm" style={{ background: COLORS.pineDeep, color: COLORS.white }}>
+          상담 시작하기
+        </button>
+      </div>
+    );
+  }
+
+  if (effective.closed) {
+    return (
+      <div className="h-full flex flex-col">
+        <div className="px-4 py-2.5 text-center text-xs font-semibold" style={{ background: COLORS.paperDeep, color: COLORS.inkSoft }}>
+          상담이 종료됐어요
+        </div>
+        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
+          {messages.map((m) => (
+            <div key={m.id} className={`flex flex-col ${m.from === "patient" ? "items-end" : "items-start"}`}>
+              <div
+                className="max-w-[75%] rounded-2xl px-4 py-2.5 text-sm opacity-70"
+                style={
+                  m.from === "patient"
+                    ? { background: COLORS.pine, color: COLORS.white, borderBottomRightRadius: 4 }
+                    : { background: COLORS.white, color: COLORS.ink, borderBottomLeftRadius: 4 }
+                }
+              >
+                {m.text}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="px-4 py-4" style={{ borderTop: `1px solid ${COLORS.paperDeep}` }}>
+          <button onClick={onStart} className="w-full rounded-xl py-3 font-bold text-sm" style={{ background: COLORS.pineDeep, color: COLORS.white }}>
+            새 상담 시작하기
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full flex flex-col">
+      <div
+        className="px-4 py-2.5 text-center text-xs font-bold"
+        style={effective.waiting ? { background: COLORS.amber, color: COLORS.white } : { background: COLORS.pine, color: COLORS.white }}
+      >
+        {effective.waiting ? "🕒 상담 대기중 · 순서가 되면 답변드려요" : "🩺 진료중"}
+      </div>
+      <MessagesView messages={messages} onSend={onSend} />
+    </div>
+  );
+}
+
 function MessagesView({ messages, onSend }) {
   const [text, setText] = useState("");
   const bottomRef = useRef(null);
@@ -1354,6 +1484,7 @@ function PatientApp({ onExit }) {
   const [intakeTarget, setIntakeTarget] = useState(null); // appt object | null
   const [exerciseDates, setExerciseDates] = useState([]);
   const [myStamps, setMyStamps] = useState([]);
+  const [mySessionState, setMySessionState] = useState(null);
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState(null);
   const [notifPermission, setNotifPermission] = useState(typeof Notification !== "undefined" ? Notification.permission : "unsupported");
@@ -1450,6 +1581,7 @@ function PatientApp({ onExit }) {
       seenMsgIds.current = new Set(myMsgs.map((x) => x.id));
       setMyStamps(await loadStampsForPatient(p.phone));
       setExerciseDates(await loadExerciseLogs(p.phone));
+      setMySessionState(await loadMySessionStatus(p.phone));
     }
     setAllMessages(m);
   };
@@ -1463,6 +1595,7 @@ function PatientApp({ onExit }) {
         setIntakeForms(await loadIntakeForms());
         setExerciseDates(await loadExerciseLogs(p.phone));
         setMyStamps(await loadStampsForPatient(p.phone));
+        setMySessionState(await loadMySessionStatus(p.phone));
         setProfile(p);
       }
       setLoading(false);
@@ -1476,6 +1609,11 @@ function PatientApp({ onExit }) {
     pollRef.current = setInterval(refreshAll, 8000);
     return () => clearInterval(pollRef.current);
   }, [profile]);
+
+  const handleStartSession = async () => {
+    await setConversationSession(profile.phone, { waiting: true, closed: false });
+    setMySessionState({ waiting: true, closed: false });
+  };
 
   const handleLogin = async (p) => {
     saveProfile(p);
@@ -1601,6 +1739,18 @@ function PatientApp({ onExit }) {
       <div className="flex-1 overflow-hidden">
         {tab === "book" ? (
           <div className="h-full overflow-y-auto px-5 pb-24">
+            {(() => {
+              const painPoints = buildPainHistory(intakeForms, allAppointments, profile.phone);
+              if (painPoints.length < 2) return null;
+              return (
+                <div className="rounded-2xl px-4 py-4 mb-5" style={{ background: COLORS.white }}>
+                  <div className="text-xs font-bold mb-2" style={{ color: COLORS.ink }}>
+                    나의 통증 변화
+                  </div>
+                  <PainTrendChart points={painPoints} />
+                </div>
+              );
+            })()}
             <button onClick={() => setBooking(true)} className="w-full rounded-2xl py-4 font-bold text-base flex items-center justify-center gap-2 mb-5" style={{ background: COLORS.pineDeep, color: COLORS.white }}>
               <Calendar size={18} />새 예약 잡기
             </button>
@@ -1622,7 +1772,7 @@ function PatientApp({ onExit }) {
             )}
           </div>
         ) : tab === "messages" ? (
-          <MessagesView messages={myMessages} onSend={handleSend} />
+          <PatientConsultation messages={myMessages} sessionState={mySessionState} onStart={handleStartSession} onSend={handleSend} />
         ) : tab === "community" ? (
           <CommunityBoard posts={posts} myPhone={profile.phone} onPost={handlePost} onDelete={handleDeletePost} onRefresh={refreshPosts} refreshing={postsRefreshing} />
         ) : (
@@ -1789,6 +1939,37 @@ function AdminExerciseViewModal({ name, phone, dates, stampedDates, onToggleStam
               </button>
             ))}
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PainTrendModal({ name, points, onClose }) {
+  return (
+    <div className="fixed inset-0 z-20 flex items-end sm:items-center justify-center" style={{ background: "rgba(32,40,31,0.45)" }}>
+      <div className="w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl overflow-hidden flex flex-col" style={{ background: COLORS.paper, maxHeight: "85vh" }}>
+        <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: `1px solid ${COLORS.paperDeep}` }}>
+          <div>
+            <div className="text-sm font-bold" style={{ color: COLORS.ink }}>
+              {name}님 통증 추이
+            </div>
+            <div className="text-[11px]" style={{ color: COLORS.inkSoft }}>
+              방문 시 작성한 문진표 기준 (1~10)
+            </div>
+          </div>
+          <button onClick={onClose} aria-label="닫기">
+            <X size={20} color={COLORS.ink} />
+          </button>
+        </div>
+        <div className="px-5 py-5 overflow-y-auto">
+          {points.length === 0 ? (
+            <div className="text-center text-sm py-6" style={{ color: COLORS.inkSoft }}>
+              아직 문진표에 통증 정도를 기록한 내역이 없어요.
+            </div>
+          ) : (
+            <PainTrendChart points={points} />
+          )}
         </div>
       </div>
     </div>
@@ -2063,7 +2244,7 @@ function ComposeMessage({ candidates, onStart, onClose }) {
   );
 }
 
-function AdminMessages({ messages, appointments, closedMap, onToggleClosed, onReply, onDelete, onDeleteConversation, onRefresh, refreshing, openTarget, onConsumeOpenTarget }) {
+function AdminMessages({ messages, appointments, sessionMap, onSessionAction, onReply, onDelete, onDeleteConversation, onRefresh, refreshing, openTarget, onConsumeOpenTarget }) {
   const [openThread, setOpenThread] = useState(null); // { phone, name } | null
   const [composeOpen, setComposeOpen] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
@@ -2087,8 +2268,9 @@ function AdminMessages({ messages, appointments, closedMap, onToggleClosed, onRe
     .map((t) => ({ ...t, items: t.items.sort((a, b) => new Date(a.at) - new Date(b.at)) }))
     .sort((a, b) => new Date(b.items.at(-1)?.at || 0) - new Date(a.items.at(-1)?.at || 0));
 
-  const threadList = allThreadList.filter((t) => !closedMap[t.phone]);
-  const archivedList = allThreadList.filter((t) => closedMap[t.phone]);
+  const waitingList = allThreadList.filter((t) => sessionMap[t.phone]?.waiting && !sessionMap[t.phone]?.closed);
+  const threadList = allThreadList.filter((t) => !sessionMap[t.phone]?.closed && !sessionMap[t.phone]?.waiting);
+  const archivedList = allThreadList.filter((t) => sessionMap[t.phone]?.closed);
 
   // 예약은 있지만 아직 대화가 없는 환자 목록 (관리자가 먼저 말을 걸 수 있는 대상)
   const knownPatients = {};
@@ -2103,7 +2285,7 @@ function AdminMessages({ messages, appointments, closedMap, onToggleClosed, onRe
 
   if (openThread) {
     const items = threads[openThread.phone]?.items || [];
-    const isClosed = !!closedMap[openThread.phone];
+    const state = sessionMap[openThread.phone] || { closed: false, waiting: false };
     const send = () => {
       if (!reply.trim()) return;
       onReply(openThread.phone, openThread.name, reply.trim());
@@ -2126,13 +2308,31 @@ function AdminMessages({ messages, appointments, closedMap, onToggleClosed, onRe
             </div>
           </div>
           <div className="flex items-center gap-1.5">
-            <button
-              onClick={() => onToggleClosed(openThread.phone, !isClosed)}
-              className="text-xs font-semibold px-2.5 py-1.5 rounded-lg"
-              style={{ color: isClosed ? COLORS.pine : COLORS.danger, background: COLORS.paper }}
-            >
-              {isClosed ? "다시 열기" : "대화 종료"}
-            </button>
+            {state.waiting ? (
+              <button
+                onClick={() => onSessionAction(openThread.phone, { waiting: false, closed: false })}
+                className="text-xs font-bold px-2.5 py-1.5 rounded-lg"
+                style={{ color: COLORS.white, background: COLORS.amber }}
+              >
+                입장하기
+              </button>
+            ) : state.closed ? (
+              <button
+                onClick={() => onSessionAction(openThread.phone, { closed: false, waiting: false })}
+                className="text-xs font-semibold px-2.5 py-1.5 rounded-lg"
+                style={{ color: COLORS.pine, background: COLORS.paper }}
+              >
+                다시 열기
+              </button>
+            ) : (
+              <button
+                onClick={() => onSessionAction(openThread.phone, { closed: true, waiting: false })}
+                className="text-xs font-semibold px-2.5 py-1.5 rounded-lg"
+                style={{ color: COLORS.danger, background: COLORS.paper }}
+              >
+                대화 종료
+              </button>
+            )}
             <button
               onClick={() => {
                 if (window.confirm(`${openThread.name}님과의 대화 전체를 삭제할까요? 되돌릴 수 없어요.`)) {
@@ -2218,7 +2418,7 @@ function AdminMessages({ messages, appointments, closedMap, onToggleClosed, onRe
     <div className="h-full overflow-y-auto px-5 pb-24">
       <div className="flex items-center justify-between mb-4">
         <span className="text-xs font-semibold" style={{ color: COLORS.inkSoft }}>
-          환자 문의 {threadList.length}건
+          진료중 {threadList.length}건
         </span>
         <div className="flex items-center gap-3">
           <button onClick={onRefresh} className="flex items-center gap-1 text-xs font-medium" style={{ color: COLORS.pine }}>
@@ -2236,9 +2436,42 @@ function AdminMessages({ messages, appointments, closedMap, onToggleClosed, onRe
         새 메시지 보내기
       </button>
 
+      {waitingList.length > 0 && (
+        <div className="mb-5">
+          <div className="text-xs font-bold mb-2 flex items-center gap-1.5" style={{ color: COLORS.amber }}>
+            🕒 대기실 ({waitingList.length})
+          </div>
+          <div className="space-y-2">
+            {waitingList.map((t) => {
+              const last = t.items.at(-1);
+              return (
+                <button
+                  key={t.phone}
+                  onClick={() => setOpenThread({ phone: t.phone, name: t.name })}
+                  className="w-full flex items-center justify-between rounded-xl px-4 py-3.5"
+                  style={{ background: COLORS.white, border: `1.5px solid ${COLORS.amber}` }}
+                >
+                  <div className="text-left">
+                    <div className="font-bold text-sm" style={{ color: COLORS.ink }}>
+                      {t.name}
+                    </div>
+                    <div className="text-xs mt-0.5 truncate max-w-[180px]" style={{ color: COLORS.inkSoft }}>
+                      {last.text}
+                    </div>
+                  </div>
+                  <span className="text-xs font-bold px-2.5 py-1 rounded-lg" style={{ background: COLORS.amber, color: COLORS.white }}>
+                    입장하기
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {threadList.length === 0 ? (
         <div className="text-center text-sm mt-10" style={{ color: COLORS.inkSoft }}>
-          아직 문의가 없어요.
+          아직 진료중인 상담이 없어요.
         </div>
       ) : (
         <div className="space-y-2">
@@ -2403,7 +2636,7 @@ function AdminCommunity({ posts, onDelete, onRefresh, refreshing }) {
   );
 }
 
-function AdminCustomers({ appointments, messages, exerciseLogs, onMessage, onDeletePatient, onViewExercise, onRefresh, refreshing }) {
+function AdminCustomers({ appointments, messages, exerciseLogs, intakeForms, onMessage, onDeletePatient, onViewExercise, onViewPainTrend, onRefresh, refreshing }) {
   const [query, setQuery] = useState("");
 
   const customers = {};
@@ -2509,6 +2742,14 @@ function AdminCustomers({ appointments, messages, exerciseLogs, onMessage, onDel
                   </button>
                 );
               })()}
+              <button
+                onClick={() => onViewPainTrend(c.name, buildPainHistory(intakeForms, appointments, c.phone))}
+                className="flex items-center gap-1.5 mt-2 text-[11px] font-semibold"
+                style={{ color: COLORS.pine }}
+              >
+                <LineChart size={12} />
+                통증 추이 보기
+              </button>
             </div>
           ))}
         </div>
@@ -2533,11 +2774,12 @@ function AdminApp({ onExit }) {
   const [noticeEditorOpen, setNoticeEditorOpen] = useState(false);
   const [posts, setPosts] = useState([]);
   const [postsRefreshing, setPostsRefreshing] = useState(false);
-  const [closedMap, setClosedMap] = useState({});
+  const [sessionMap, setSessionMap] = useState({});
   const [intakeForms, setIntakeForms] = useState([]);
   const [intakeViewTarget, setIntakeViewTarget] = useState(null); // appointment object | null
   const [exerciseLogs, setExerciseLogs] = useState([]);
   const [exerciseViewTarget, setExerciseViewTarget] = useState(null); // { name, phone, dates } | null
+  const [painTrendTarget, setPainTrendTarget] = useState(null); // { name, points } | null
   const [stamps, setStamps] = useState([]);
 
   const seenApptIds = useRef(null);
@@ -2648,7 +2890,7 @@ function AdminApp({ onExit }) {
     seenMsgIds.current = new Set(m.map((x) => x.id));
     setAppointments(a);
     setMessages(m);
-    setClosedMap(await loadConversationStatuses());
+    setSessionMap(await loadConversationStatuses());
     setIntakeForms(await loadIntakeForms());
     setExerciseLogs(await loadAllExerciseLogs());
     setStamps(await loadAllStamps());
@@ -2662,7 +2904,7 @@ function AdminApp({ onExit }) {
       await refresh(false);
       setNotice(await loadNotice());
       setPosts(await loadPosts());
-      setClosedMap(await loadConversationStatuses());
+      setSessionMap(await loadConversationStatuses());
       setLoading(false);
     })();
     pollRef.current = setInterval(() => refresh(true), 15000);
@@ -2674,9 +2916,9 @@ function AdminApp({ onExit }) {
     setNotice(text);
   };
 
-  const handleToggleClosed = async (phone, closed) => {
-    setClosedMap((prev) => ({ ...prev, [phone]: closed }));
-    await setConversationClosed(phone, closed);
+  const handleSessionAction = async (phone, fields) => {
+    setSessionMap((prev) => ({ ...prev, [phone]: { ...(prev[phone] || { closed: false, waiting: false }), ...fields } }));
+    await setConversationSession(phone, fields);
   };
 
   const refreshPosts = async () => {
@@ -2814,8 +3056,8 @@ function AdminApp({ onExit }) {
           <AdminMessages
             messages={messages}
             appointments={appointments}
-            closedMap={closedMap}
-            onToggleClosed={handleToggleClosed}
+            sessionMap={sessionMap}
+            onSessionAction={handleSessionAction}
             onReply={handleReply}
             onDelete={handleDeleteMessage}
             onDeleteConversation={handleDeleteConversation}
@@ -2831,6 +3073,7 @@ function AdminApp({ onExit }) {
             appointments={appointments}
             messages={messages}
             exerciseLogs={exerciseLogs}
+            intakeForms={intakeForms}
             onMessage={(phone, name) => {
               setMessageTarget({ phone, name });
               setTab("messages");
@@ -2838,6 +3081,7 @@ function AdminApp({ onExit }) {
             }}
             onDeletePatient={handleDeletePatient}
             onViewExercise={(name, phone, dates) => setExerciseViewTarget({ name, phone, dates })}
+            onViewPainTrend={(name, points) => setPainTrendTarget({ name, points })}
             onRefresh={() => refresh(false)}
             refreshing={refreshing}
           />
@@ -2904,6 +3148,8 @@ function AdminApp({ onExit }) {
           onClose={() => setExerciseViewTarget(null)}
         />
       )}
+
+      {painTrendTarget && <PainTrendModal name={painTrendTarget.name} points={painTrendTarget.points} onClose={() => setPainTrendTarget(null)} />}
     </div>
   );
 }
