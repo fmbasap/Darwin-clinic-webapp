@@ -1313,10 +1313,10 @@ function ExerciseLog({ dates, stampedDates, onToggleToday }) {
             {d.label}
             {stampSet.has(d.str) && (
               <span
-                className="absolute -top-1.5 -right-1.5 rounded-full flex items-center justify-center"
-                style={{ width: 16, height: 16, background: COLORS.danger }}
+                className="absolute inset-0.5 rounded-full flex items-center justify-center"
+                style={{ background: COLORS.danger, border: `2px solid ${COLORS.white}`, transform: "rotate(-10deg)" }}
               >
-                <Star size={10} color={COLORS.white} fill={COLORS.white} />
+                <Star size={16} color={COLORS.white} fill={COLORS.white} />
               </span>
             )}
           </div>
@@ -1766,10 +1766,10 @@ function AdminExerciseViewModal({ name, phone, dates, stampedDates, onToggleStam
                 {d.label}
                 {stampSet.has(d.str) && (
                   <span
-                    className="absolute -top-1.5 -right-1.5 rounded-full flex items-center justify-center"
-                    style={{ width: 16, height: 16, background: COLORS.danger }}
+                    className="absolute inset-0.5 rounded-full flex items-center justify-center"
+                    style={{ background: COLORS.danger, border: `2px solid ${COLORS.white}`, transform: "rotate(-10deg)" }}
                   >
-                    <Star size={10} color={COLORS.white} fill={COLORS.white} />
+                    <Star size={16} color={COLORS.white} fill={COLORS.white} />
                   </span>
                 )}
               </button>
