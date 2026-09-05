@@ -1260,6 +1260,7 @@ function ExerciseLog({ dates, stampedDates, onToggleToday }) {
   const today = new Date();
   const todayStr = localDateStr(today);
   const didToday = dateSet.has(todayStr);
+  const todayLocked = didToday && stampSet.has(todayStr);
   const streak = computeStreak(dateSet);
   const stampCount = stampSet.size;
 
@@ -1287,13 +1288,23 @@ function ExerciseLog({ dates, stampedDates, onToggleToday }) {
           </div>
         )}
         <button
-          onClick={() => onToggleToday(!didToday)}
+          onClick={() => !todayLocked && onToggleToday(!didToday)}
+          disabled={todayLocked}
           className="w-full mt-4 rounded-xl py-3.5 font-bold flex items-center justify-center gap-2"
-          style={didToday ? { background: COLORS.amber, color: COLORS.white } : { background: COLORS.white, color: COLORS.pineDeep }}
+          style={
+            didToday
+              ? { background: COLORS.amber, color: COLORS.white, opacity: todayLocked ? 0.85 : 1, cursor: todayLocked ? "default" : "pointer" }
+              : { background: COLORS.white, color: COLORS.pineDeep }
+          }
         >
-          <Dumbbell size={18} />
-          {didToday ? "오늘 운동 완료!" : "오늘 운동 체크하기"}
+          {todayLocked ? <Star size={18} fill={COLORS.white} /> : <Dumbbell size={18} />}
+          {todayLocked ? "오늘 운동 완료! (칭찬 받음)" : didToday ? "오늘 운동 완료!" : "오늘 운동 체크하기"}
         </button>
+        {todayLocked && (
+          <p className="text-[11px] mt-2" style={{ color: "rgba(255,255,255,0.7)" }}>
+            원장님이 칭찬한 기록은 취소할 수 없어요.
+          </p>
+        )}
       </div>
 
       <div className="text-xs font-bold mb-2" style={{ color: COLORS.inkSoft }}>
@@ -1479,6 +1490,7 @@ function PatientApp({ onExit }) {
 
   const handleToggleExerciseToday = async (checked) => {
     const todayStr = localDateStr(new Date());
+    if (!checked && myStamps.includes(todayStr)) return; // 칭찬 도장 찍힌 날은 취소 불가
     setExerciseDates((prev) => (checked ? [...prev, todayStr] : prev.filter((d) => d !== todayStr)));
     await toggleExerciseLog(profile.phone, todayStr, checked);
   };
