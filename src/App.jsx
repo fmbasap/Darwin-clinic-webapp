@@ -1658,6 +1658,57 @@ function AdminLogin({ onSuccess, onBack }) {
   );
 }
 
+function AdminExerciseViewModal({ name, dates, onClose }) {
+  const dateSet = new Set(dates);
+  const today = new Date();
+  const todayStr = localDateStr(today);
+  const streak = computeStreak(dateSet);
+
+  const days = [];
+  for (let i = 27; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    days.push({ str: localDateStr(d), label: d.getDate(), checked: dateSet.has(localDateStr(d)), isToday: localDateStr(d) === todayStr });
+  }
+
+  return (
+    <div className="fixed inset-0 z-20 flex items-end sm:items-center justify-center" style={{ background: "rgba(32,40,31,0.45)" }}>
+      <div className="w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl overflow-hidden flex flex-col" style={{ background: COLORS.paper, maxHeight: "85vh" }}>
+        <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: `1px solid ${COLORS.paperDeep}` }}>
+          <div>
+            <div className="text-sm font-bold" style={{ color: COLORS.ink }}>
+              {name}님 운동 일지
+            </div>
+            <div className="text-[11px]" style={{ color: COLORS.inkSoft }}>
+              최근 4주 · 총 {dateSet.size}일 실천 · 연속 {streak}일
+            </div>
+          </div>
+          <button onClick={onClose} aria-label="닫기">
+            <X size={20} color={COLORS.ink} />
+          </button>
+        </div>
+        <div className="px-5 py-4 overflow-y-auto">
+          <div className="grid grid-cols-7 gap-1.5">
+            {days.map((d) => (
+              <div
+                key={d.str}
+                className="aspect-square rounded-lg flex items-center justify-center text-[10px] font-bold"
+                style={
+                  d.checked
+                    ? { background: COLORS.pine, color: COLORS.white }
+                    : { background: COLORS.white, color: COLORS.inkSoft, border: d.isToday ? `1.5px solid ${COLORS.amber}` : "none" }
+                }
+              >
+                {d.label}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function IntakeViewModal({ appt, intake, onClose }) {
   return (
     <div className="fixed inset-0 z-20 flex items-end sm:items-center justify-center" style={{ background: "rgba(32,40,31,0.45)" }}>
@@ -2266,7 +2317,7 @@ function AdminCommunity({ posts, onDelete, onRefresh, refreshing }) {
   );
 }
 
-function AdminCustomers({ appointments, messages, exerciseLogs, onMessage, onDeletePatient, onRefresh, refreshing }) {
+function AdminCustomers({ appointments, messages, exerciseLogs, onMessage, onDeletePatient, onViewExercise, onRefresh, refreshing }) {
   const [query, setQuery] = useState("");
 
   const customers = {};
@@ -2363,10 +2414,14 @@ function AdminCustomers({ appointments, messages, exerciseLogs, onMessage, onDel
                 if (dateSet.size === 0) return null;
                 const streak = computeStreak(dateSet);
                 return (
-                  <div className="flex items-center gap-1.5 mt-2 text-[11px] font-semibold" style={{ color: COLORS.amber }}>
+                  <button
+                    onClick={() => onViewExercise(c.name, [...dateSet])}
+                    className="flex items-center gap-1.5 mt-2 text-[11px] font-semibold"
+                    style={{ color: COLORS.amber }}
+                  >
                     <Dumbbell size={12} />
                     운동 {dateSet.size}일 기록 {streak > 0 && `· 연속 ${streak}일`}
-                  </div>
+                  </button>
                 );
               })()}
             </div>
@@ -2397,6 +2452,7 @@ function AdminApp({ onExit }) {
   const [intakeForms, setIntakeForms] = useState([]);
   const [intakeViewTarget, setIntakeViewTarget] = useState(null); // appointment object | null
   const [exerciseLogs, setExerciseLogs] = useState([]);
+  const [exerciseViewTarget, setExerciseViewTarget] = useState(null); // { name, dates } | null
 
   const seenApptIds = useRef(null);
   const seenApptStatus = useRef(null);
@@ -2694,6 +2750,7 @@ function AdminApp({ onExit }) {
               setNewMsgCount(0);
             }}
             onDeletePatient={handleDeletePatient}
+            onViewExercise={(name, dates) => setExerciseViewTarget({ name, dates })}
             onRefresh={() => refresh(false)}
             refreshing={refreshing}
           />
@@ -2743,6 +2800,10 @@ function AdminApp({ onExit }) {
           intake={intakeForms.find((f) => f.appointmentId === intakeViewTarget.id)}
           onClose={() => setIntakeViewTarget(null)}
         />
+      )}
+
+      {exerciseViewTarget && (
+        <AdminExerciseViewModal name={exerciseViewTarget.name} dates={exerciseViewTarget.dates} onClose={() => setExerciseViewTarget(null)} />
       )}
     </div>
   );
